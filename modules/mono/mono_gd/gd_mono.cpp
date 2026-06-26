@@ -457,7 +457,7 @@ godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime
 			UNMANAGEDCALLERSONLY_METHOD,
 			nullptr,
 			(void **)&godot_plugins_initialize);
-	ERR_FAIL_COND_V_MSG(rc != 0, nullptr, ".NET: Failed to get GodotPlugins initialization function pointer");
+	ERR_FAIL_COND_V_MSG(rc != 0, nullptr, vformat(".NET: Failed to get GodotPlugins initialization function pointer (rc=%d)", rc));
 
 	return godot_plugins_initialize;
 }
@@ -484,7 +484,7 @@ godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime
 			UNMANAGEDCALLERSONLY_METHOD,
 			nullptr,
 			(void **)&godot_plugins_initialize);
-	ERR_FAIL_COND_V_MSG(rc != 0, nullptr, ".NET: Failed to get GodotPlugins initialization function pointer");
+	ERR_FAIL_COND_V_MSG(rc != 0, nullptr, vformat(".NET: Failed to get GodotPlugins initialization function pointer (rc=%d)", rc));
 
 	return godot_plugins_initialize;
 }
