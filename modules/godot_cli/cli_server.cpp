@@ -40,7 +40,9 @@ GodotCLIServer *GodotCLIServer::singleton = nullptr;
 GodotCLIServer::GodotCLIServer() {
 	ERR_FAIL_COND(singleton != nullptr);
 	singleton = this;
-	handler = GodotCLICommandHandler::get_singleton();
+	// Handler is resolved lazily in process_message() since the
+	// command handler singleton is created after this constructor runs.
+	handler = nullptr;
 }
 
 GodotCLIServer::~GodotCLIServer() {
@@ -143,6 +145,15 @@ String GodotCLIServer::process_message(const String &p_message) {
 	Dictionary cmd = _parse_command(p_message);
 	if (cmd.is_empty()) {
 		Dictionary err_resp = godot_cli::make_error(0, "Invalid JSON command", godot_cli::RESULT_INVALID_PARAMS);
+		return JSON::stringify(err_resp);
+	}
+
+	// Lazy resolve handler (constructed after this server singleton).
+	if (!handler) {
+		handler = GodotCLICommandHandler::get_singleton();
+	}
+	if (!handler) {
+		Dictionary err_resp = godot_cli::make_error(0, "Command handler not available");
 		return JSON::stringify(err_resp);
 	}
 
