@@ -70,6 +70,7 @@
 #include "modules/gdscript/gdscript.h"
 
 #include "core/input/input.h"
+#include "core/input/input_map.h"
 #include "scene/resources/texture.h"
 
 // ── Log ring buffer ───────────────────────────────────────────────────
@@ -233,6 +234,12 @@ HANDLER_DECL(scene_open);
 HANDLER_DECL(scene_new);
 HANDLER_DECL(scene_attach_script);
 HANDLER_DECL(scene_connect);
+HANDLER_DECL(scene_validate);
+HANDLER_DECL(scene_groups_add);
+HANDLER_DECL(scene_groups_remove);
+HANDLER_DECL(scene_groups_list);
+HANDLER_DECL(game_restart);
+HANDLER_DECL(project_input_bind);
 HANDLER_DECL(game_run);
 HANDLER_DECL(game_stop);
 HANDLER_DECL(game_pause);
@@ -294,6 +301,11 @@ void GodotCLICommandHandler::_register_scene_commands() {
 	REGISTER("scene/new", _handler_scene_new);
 	REGISTER("scene/attach_script", _handler_scene_attach_script);
 	REGISTER("scene/connect", _handler_scene_connect);
+	REGISTER("scene/validate", _handler_scene_validate);
+	REGISTER("scene/groups_add", _handler_scene_groups_add);
+	REGISTER("scene/groups_remove", _handler_scene_groups_remove);
+	REGISTER("scene/groups_list", _handler_scene_groups_list);
+	REGISTER("game/restart", _handler_game_restart);
 }
 
 HANDLER(scene_tree) {
@@ -523,6 +535,24 @@ HANDLER(scene_set) {
 		}
 	}
 
+	// Handle array-to-Vector conversion for spatial properties
+	if (value.get_type() == Variant::ARRAY) {
+		Array arr = value;
+		if (property == "position" || property == "scale") {
+			if (arr.size() == 2) {
+				value = Vector2(arr[0], arr[1]);
+			} else if (arr.size() == 3) {
+				value = Vector3(arr[0], arr[1], arr[2]);
+			}
+		} else if (property == "rotation") {
+			value = float(arr[0]);
+		} else if (property == "size") {
+			if (arr.size() == 2) {
+				value = Vector2(arr[0], arr[1]);
+			}
+		}
+	}
+
 	node->set(property, value);
 
 	Dictionary result;
@@ -660,6 +690,77 @@ HANDLER(scene_connect) {
 	return result;
 }
 
+HANDLER(scene_validate) {
+	String path = p_params.get("path", "res://main.tscn");
+	String full_path = path;
+	if (!path.begins_with("res://")) {
+		full_path = "res://" + path;
+	}
+
+	// Try loading as a scene - Godot reports parse errors in the process.
+	Ref<PackedScene> scene = ResourceLoader::load(full_path);
+	Dictionary result;
+	result["path"] = full_path;
+	result["valid"] = scene.is_valid();
+	if (scene.is_null()) {
+		result["error"] = "Scene file failed to load — likely has parse errors";
+	}
+	_push_log(vformat("scene/validate: %s %s", full_path, scene.is_valid() ? "valid" : "INVALID"));
+	return result;
+}
+
+HANDLER(scene_groups_add) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	ERR_FAIL_COND_V(!scene_tree, _handler_scene_tree(p_params));
+	String node_path = p_params.get("path", "");
+	String group = p_params.get("group", "");
+	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path'"), "");
+	ERR_FAIL_COND_V_MSG(group.is_empty(), godot_cli::make_error(0, "Missing 'group'"), "");
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
+	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
+	node->add_to_group(group);
+	_push_log(vformat("scene/groups_add: %s -> %s", node_path, group));
+	Dictionary result;
+	result["node"] = node_path;
+	result["group"] = group;
+	return result;
+}
+
+HANDLER(scene_groups_remove) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	ERR_FAIL_COND_V(!scene_tree, _handler_scene_tree(p_params));
+	String node_path = p_params.get("path", "");
+	String group = p_params.get("group", "");
+	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path'"), "");
+	ERR_FAIL_COND_V_MSG(group.is_empty(), godot_cli::make_error(0, "Missing 'group'"), "");
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
+	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
+	node->remove_from_group(group);
+	Dictionary result;
+	result["node"] = node_path;
+	result["group"] = group;
+	return result;
+}
+
+HANDLER(scene_groups_list) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	ERR_FAIL_COND_V(!scene_tree, _handler_scene_tree(p_params));
+	String node_path = p_params.get("path", "");
+	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path'"), "");
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
+	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
+	List<Node::GroupInfo> ginfo;
+	node->get_groups(&ginfo);
+	Array groups;
+	for (const Node::GroupInfo &E : ginfo) {
+		groups.push_back(E.name);
+	}
+	Dictionary result;
+	result["node"] = node_path;
+	result["groups"] = groups;
+	return result;
+}
+
 // ========================================================================
 // Game commands
 // ========================================================================
@@ -670,6 +771,7 @@ void GodotCLICommandHandler::_register_game_commands() {
 	REGISTER("game/pause", _handler_game_pause);
 	REGISTER("game/resume", _handler_game_resume);
 	REGISTER("game/step", _handler_game_step);
+	REGISTER("game/restart", _handler_game_restart);
 }
 
 HANDLER(game_run) {
@@ -743,6 +845,18 @@ HANDLER(game_step) {
 	_push_log(vformat("game/step: %d frames", frames));
 	Dictionary result;
 	result["frames"] = frames;
+	return result;
+}
+
+HANDLER(game_restart) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	if (!scene_tree) {
+		return godot_cli::make_error(0, "No scene tree available");
+	}
+	scene_tree->reload_current_scene();
+	_push_log("game/restart");
+	Dictionary result;
+	result["restarted"] = true;
 	return result;
 }
 
@@ -1130,6 +1244,7 @@ HANDLER(render_screenshot) {
 
 void GodotCLICommandHandler::_register_project_commands() {
 	REGISTER("project/settings", _handler_project_settings);
+	REGISTER("project/input_bind", _handler_project_input_bind);
 }
 
 HANDLER(project_settings) {
@@ -1167,6 +1282,35 @@ HANDLER(project_settings) {
 		result["set"] = true;
 	}
 
+	return result;
+}
+
+HANDLER(project_input_bind) {
+	String action_name = p_params.get("action", "");
+	Array keys = p_params.get("keys", Array());
+	ERR_FAIL_COND_V_MSG(action_name.is_empty(), godot_cli::make_error(0, "Missing 'action'"), "");
+	InputMap *im = InputMap::get_singleton();
+	ERR_FAIL_COND_V(!im, godot_cli::make_error(0, "No InputMap"));
+	if (!im->has_action(action_name)) {
+		im->add_action(action_name);
+	}
+	for (int i = 0; i < keys.size(); i++) {
+		String key_str = keys[i];
+		Key keycode = find_keycode(key_str);
+		Ref<InputEventKey> ie;
+		ie.instantiate();
+		ie->set_keycode(keycode);
+		ie->set_physical_keycode(keycode);
+		im->action_add_event(action_name, ie);
+	}
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	if (ps) {
+		ps->save();
+	}
+	_push_log(vformat("project/input_bind: %s = %d keys", action_name, keys.size()));
+	Dictionary result;
+	result["action"] = action_name;
+	result["bound_keys"] = keys.size();
 	return result;
 }
 
