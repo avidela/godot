@@ -470,6 +470,59 @@ HANDLER(scene_set) {
 	ERR_FAIL_COND_V_MSG(property.is_empty(), godot_cli::make_error(0, "Missing 'property' parameter"), "");
 
 	Variant value = p_params.get("value", Variant());
+
+	// Handle string paths for resource properties (e.g. shape, texture, material)
+	if (value.get_type() == Variant::STRING) {
+		String path_str = value;
+		if (path_str.begins_with("res://") && path_str.ends_with(".tres") || path_str.ends_with(".res")) {
+			Ref<Resource> loaded = ResourceLoader::load(path_str);
+			if (loaded.is_valid()) {
+				value = loaded;
+			}
+		}
+	}
+
+	// Handle Dictionary-to-Resource conversion for scene properties
+	if (value.get_type() == Variant::DICTIONARY) {
+		Dictionary dict = value;
+		if (dict.has("resource_type")) {
+			String res_type = dict["resource_type"];
+			// Create resource via instantiate then wrap in Ref
+			Object *obj = ClassDB::instantiate(res_type);
+			if (obj) {
+				Ref<Resource> res = Ref<Resource>(Object::cast_to<Resource>(obj));
+				if (res.is_valid()) {
+					Array keys = dict.keys();
+					for (int i = 0; i < keys.size(); i++) {
+						String key = keys[i];
+						if (key == "resource_type") continue;
+						Variant val = dict[key];
+						if (val.get_type() == Variant::ARRAY) {
+							Array arr = val;
+							if (key == "size" && arr.size() == 2) {
+								res->set(key, Vector2(arr[0], arr[1]));
+							} else if (key == "size" && arr.size() == 3) {
+								res->set(key, Vector3(arr[0], arr[1], arr[2]));
+							} else if (key == "radius") {
+								res->set(key, float(arr[0]));
+							} else {
+								res->set(key, val);
+							}
+						} else {
+							res->set(key, val);
+						}
+					}
+					// Save to temp file and reload to ensure proper resource type
+					String tmp_path = vformat("res://.godot_cli_shape_%d.res", OS::get_singleton()->get_unix_time());
+					ResourceSaver::save(res, tmp_path);
+					value = ResourceLoader::load(tmp_path);
+				} else if (obj) {
+					memdelete(obj);
+				}
+			}
+		}
+	}
+
 	node->set(property, value);
 
 	Dictionary result;
