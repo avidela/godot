@@ -240,6 +240,7 @@ HANDLER_DECL(scene_groups_remove);
 HANDLER_DECL(scene_groups_list);
 HANDLER_DECL(game_restart);
 HANDLER_DECL(project_input_bind);
+HANDLER_DECL(project_validate);
 HANDLER_DECL(game_run);
 HANDLER_DECL(game_stop);
 HANDLER_DECL(game_pause);
@@ -1245,6 +1246,7 @@ HANDLER(render_screenshot) {
 void GodotCLICommandHandler::_register_project_commands() {
 	REGISTER("project/settings", _handler_project_settings);
 	REGISTER("project/input_bind", _handler_project_input_bind);
+	REGISTER("project/validate", _handler_project_validate);
 }
 
 HANDLER(project_settings) {
@@ -1311,6 +1313,70 @@ HANDLER(project_input_bind) {
 	Dictionary result;
 	result["action"] = action_name;
 	result["bound_keys"] = keys.size();
+	return result;
+}
+
+HANDLER(project_validate) {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	InputMap *im = InputMap::get_singleton();
+	Dictionary result;
+	Array errors;
+	Array warnings;
+
+	// Check main scene
+	if (ps->has_setting("application/run/main_scene")) {
+		String main_scene = ps->get("application/run/main_scene");
+		result["main_scene"] = main_scene;
+		if (main_scene.is_empty()) {
+			errors.push_back("No main scene configured");
+		} else {
+			// Check if scene file exists
+			Ref<FileAccess> f = FileAccess::open(main_scene, FileAccess::READ);
+			if (f.is_null()) {
+				errors.push_back(vformat("Main scene not found: %s", main_scene));
+			}
+		}
+	} else {
+		errors.push_back("No main scene configured");
+	}
+
+	// Check required input actions
+	Array required_actions;
+	required_actions.push_back("jump");
+	required_actions.push_back("move_left");
+	required_actions.push_back("move_right");
+	required_actions.push_back("pause");
+
+	for (int i = 0; i < required_actions.size(); i++) {
+		String action = required_actions[i];
+		if (im->has_action(action)) {
+			const List<Ref<InputEvent>> *events = im->action_get_events(action);
+			if (events->is_empty()) {
+				warnings.push_back(vformat("Input action '%s' has no key bindings", action));
+			}
+		} else {
+			errors.push_back(vformat("Missing input action: %s", action));
+		}
+	}
+
+	// Check required asset directories
+	Array required_dirs;
+	required_dirs.push_back("assets/sprites");
+	required_dirs.push_back("assets/backgrounds");
+
+	for (int i = 0; i < required_dirs.size(); i++) {
+		String dir = required_dirs[i];
+		Ref<DirAccess> d = DirAccess::open(dir);
+		if (d.is_null()) {
+			warnings.push_back(vformat("Missing directory: %s", dir));
+		}
+	}
+
+	result["errors"] = errors;
+	result["warnings"] = warnings;
+	result["valid"] = errors.is_empty();
+
+	_push_log(vformat("project/validate: %d errors, %d warnings", errors.size(), warnings.size()));
 	return result;
 }
 
