@@ -29,6 +29,7 @@
 
 #include "cli_types.h"
 #include "core/config/engine.h"
+#include "core/variant/variant_utility.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 
@@ -51,29 +52,29 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth = 10, int p_depth
 
 	if (node2d) {
 		Dictionary props;
-		props["position"] = VariantUtilityFunctions::str(node2d->get_position());
+		props["position"] = VariantUtilityFunctions::var_to_str(node2d->get_position());
 		props["rotation"] = node2d->get_rotation();
-		props["scale"] = VariantUtilityFunctions::str(node2d->get_scale());
+		props["scale"] = VariantUtilityFunctions::var_to_str(node2d->get_scale());
 		props["visible"] = node2d->is_visible();
 		node_info["properties"] = props;
 	} else if (node3d) {
 		Dictionary props;
-		props["position"] = VariantUtilityFunctions::str(node3d->get_position());
-		props["rotation"] = VariantUtilityFunctions::str(node3d->get_rotation());
-		props["scale"] = VariantUtilityFunctions::str(node3d->get_scale());
+		props["position"] = VariantUtilityFunctions::var_to_str(node3d->get_position());
+		props["rotation"] = VariantUtilityFunctions::var_to_str(node3d->get_rotation());
+		props["scale"] = VariantUtilityFunctions::var_to_str(node3d->get_scale());
 		props["visible"] = node3d->is_visible();
 		node_info["properties"] = props;
 	} else if (ctrl) {
 		Dictionary props;
-		props["position"] = VariantUtilityFunctions::str(ctrl->get_position());
-		props["size"] = VariantUtilityFunctions::str(ctrl->get_size());
+		props["position"] = VariantUtilityFunctions::var_to_str(ctrl->get_position());
+		props["size"] = VariantUtilityFunctions::var_to_str(ctrl->get_size());
 		props["visible"] = ctrl->is_visible();
 		node_info["properties"] = props;
 	} else {
 		// Generic: include position if available.
 		if (p_node->has_method("get_position")) {
 			Dictionary props;
-			props["position"] = VariantUtilityFunctions::str(p_node->call("get_position"));
+			props["position"] = VariantUtilityFunctions::var_to_str(p_node->call("get_position"));
 			node_info["properties"] = props;
 		}
 	}

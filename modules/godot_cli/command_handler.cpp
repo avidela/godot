@@ -40,6 +40,7 @@
 #include "core/io/resource_loader.h"
 #include "core/io/resource_saver.h"
 #include "core/object/class_db.h"
+#include "core/variant/variant_utility.h"
 #include "core/object/script_language.h"
 #include "core/os/keyboard.h"
 #include "scene/2d/node_2d.h"
@@ -286,7 +287,7 @@ HANDLER(scene_get) {
 	if (!property.is_empty()) {
 		Dictionary result;
 		Variant value = node->get(property);
-		result["value"] = VariantUtilityFunctions::str(value);
+		result["value"] = VariantUtilityFunctions::var_to_str(value);
 		result["type"] = Variant::get_type_name(value.get_type());
 		return result;
 	}
@@ -331,7 +332,7 @@ HANDLER(scene_set) {
 
 	Dictionary result;
 	result["property"] = property;
-	result["value"] = VariantUtilityFunctions::str(node->get(property));
+	result["value"] = VariantUtilityFunctions::var_to_str(node->get(property));
 	return result;
 }
 
@@ -706,7 +707,7 @@ HANDLER(debug_inspect) {
 			Dictionary prop_info;
 			prop_info["name"] = E.name;
 			prop_info["type"] = Variant::get_type_name(E.type);
-			prop_info["value"] = VariantUtilityFunctions::str(target->get(E.name));
+			prop_info["value"] = VariantUtilityFunctions::var_to_str(target->get(E.name));
 			prop_info["hint"] = E.hint;
 			prop_list.push_back(prop_info);
 		}
@@ -925,14 +926,14 @@ HANDLER(project_settings) {
 		for (int i = 0; i < keys.size(); i++) {
 			String key = keys[i];
 			if (ps->has_setting(key)) {
-				settings[key] = VariantUtilityFunctions::str(ps->get(key));
+				settings[key] = VariantUtilityFunctions::var_to_str(ps->get(key));
 			}
 		}
 		result["settings"] = settings;
 	} else if (action == "get") {
 		String key = p_params.get("key", "");
 		if (ps->has_setting(key)) {
-			result["value"] = VariantUtilityFunctions::str(ps->get(key));
+			result["value"] = VariantUtilityFunctions::var_to_str(ps->get(key));
 		}
 	} else if (action == "set") {
 		String key = p_params.get("key", "");
