@@ -119,6 +119,7 @@ Error GodotCLIServer::_on_client_connected() {
 	ERR_FAIL_COND_V(connection.is_null(), ERR_BUG);
 
 	current_client.instantiate();
+	current_client->server = this;
 	current_client->connection = connection;
 	print_line("GodotCLIServer: Client connected.");
 	return OK;
@@ -229,7 +230,7 @@ Error GodotCLIServer::CLIRequest::handle_data() {
 
 		// Parse the message.
 		String msg = String::utf8((const char *)buffer, buffer_pos);
-		String output = process_message(msg);
+		String output = server->process_message(msg);
 
 		// Format response with content-length header.
 		CharString c_res = output.utf8();

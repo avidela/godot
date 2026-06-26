@@ -48,6 +48,7 @@
 #include "scene/gui/control.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
+#include "scene/main/window.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/packed_scene.h"
 #include "servers/audio/audio_server.h"
@@ -119,6 +120,46 @@ Dictionary GodotCLICommandHandler::handle(const Dictionary &p_command) {
 }
 
 // ========================================================================
+// Forward declarations for all handler functions
+// (defined below but referenced by REGISTER calls)
+// ========================================================================
+
+#define HANDLER_DECL(name) static Dictionary _handler_##name(const Dictionary &p_params)
+HANDLER_DECL(scene_tree);
+HANDLER_DECL(scene_add_node);
+HANDLER_DECL(scene_remove_node);
+HANDLER_DECL(scene_get);
+HANDLER_DECL(scene_set);
+HANDLER_DECL(scene_save);
+HANDLER_DECL(scene_open);
+HANDLER_DECL(scene_new);
+HANDLER_DECL(scene_attach_script);
+HANDLER_DECL(scene_connect);
+HANDLER_DECL(game_run);
+HANDLER_DECL(game_stop);
+HANDLER_DECL(game_pause);
+HANDLER_DECL(game_resume);
+HANDLER_DECL(game_step);
+HANDLER_DECL(input_key);
+HANDLER_DECL(input_mouse_move);
+HANDLER_DECL(input_mouse_button);
+HANDLER_DECL(input_action);
+HANDLER_DECL(debug_logs);
+HANDLER_DECL(debug_errors);
+HANDLER_DECL(debug_inspect);
+HANDLER_DECL(debug_monitor);
+HANDLER_DECL(script_write);
+HANDLER_DECL(script_read);
+HANDLER_DECL(script_validate);
+HANDLER_DECL(render_screenshot);
+HANDLER_DECL(project_settings);
+HANDLER_DECL(resource_list);
+HANDLER_DECL(resource_import);
+HANDLER_DECL(daemon_shutdown);
+HANDLER_DECL(daemon_ping);
+HANDLER_DECL(daemon_version);
+
+// ========================================================================
 // Command registration
 // ========================================================================
 
@@ -175,9 +216,9 @@ HANDLER(scene_add_node) {
 	// Find parent node.
 	Node *parent = nullptr;
 	if (parent_ref == "root") {
-		parent = scene_tree->get_root();
+		parent = static_cast<Node*>(scene_tree->get_root().ptr());
 	} else {
-		parent = scene_tree->get_root()->get_node(NodePath(parent_ref));
+		parent = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(parent_ref));
 	}
 	ERR_FAIL_COND_V_MSG(!parent, godot_cli::make_error(0, vformat("Parent node not found: %s", parent_ref)), "");
 
@@ -245,7 +286,7 @@ HANDLER(scene_add_node) {
 	}
 
 	parent->add_child(node);
-	node->set_owner(scene_tree->get_edited_scene_root() ? scene_tree->get_edited_scene_root() : scene_tree->get_root());
+	node->set_owner(scene_tree->get_edited_scene_root() ? scene_tree->get_edited_scene_root() : static_cast<Node*>(scene_tree->get_root().ptr()));
 
 	Dictionary result;
 	result["path"] = node->get_path();
@@ -261,7 +302,7 @@ HANDLER(scene_remove_node) {
 	String node_path = p_params.get("path", "");
 	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path' parameter"), "");
 
-	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
 	String parent_path = node->get_parent()->get_path();
@@ -280,7 +321,7 @@ HANDLER(scene_get) {
 	String node_path = p_params.get("path", "");
 	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path' parameter"), "");
 
-	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
 	String property = p_params.get("property", "");
@@ -321,7 +362,7 @@ HANDLER(scene_set) {
 	String node_path = p_params.get("path", "");
 	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path' parameter"), "");
 
-	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
 	String property = p_params.get("property", "");
@@ -343,7 +384,7 @@ HANDLER(scene_save) {
 
 	Node *root = scene_tree->get_edited_scene_root();
 	if (!root) {
-		root = scene_tree->get_root();
+		root = static_cast<Node*>(scene_tree->get_root().ptr());
 	}
 	ERR_FAIL_COND_V(!root, godot_cli::make_error(0, "No root node to save"));
 
@@ -386,7 +427,7 @@ HANDLER(scene_new) {
 	SceneTree *scene_tree = SceneTree::get_singleton();
 	ERR_FAIL_COND_V(!scene_tree, godot_cli::make_error(0, "No scene tree available"));
 
-	Node *root = scene_tree->get_root();
+	Node *root = static_cast<Node*>(scene_tree->get_root().ptr());
 	// Remove all children.
 	while (root->get_child_count() > 0) {
 		Node *child = root->get_child(0);
@@ -410,7 +451,7 @@ HANDLER(scene_attach_script) {
 	ERR_FAIL_COND_V_MSG(node_path.is_empty(), godot_cli::make_error(0, "Missing 'path' parameter"), "");
 	ERR_FAIL_COND_V_MSG(script_path.is_empty() && source.is_empty(), godot_cli::make_error(0, "Missing either 'script' or 'source'"), "");
 
-	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
 	if (!source.is_empty() && !script_path.is_empty()) {
@@ -446,12 +487,12 @@ HANDLER(scene_connect) {
 	ERR_FAIL_COND_V_MSG(signal_name.is_empty(), godot_cli::make_error(0, "Missing 'signal' parameter"), "");
 	ERR_FAIL_COND_V_MSG(method_name.is_empty(), godot_cli::make_error(0, "Missing 'method' parameter"), "");
 
-	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
 	Node *target = node;
 	if (!target_path.is_empty()) {
-		target = scene_tree->get_root()->get_node(NodePath(target_path));
+		target = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(target_path));
 		ERR_FAIL_COND_V_MSG(!target, godot_cli::make_error(0, vformat("Target node not found: %s", target_path)), "");
 	}
 
@@ -490,7 +531,7 @@ HANDLER(game_run) {
 		Node *instance = scene->instantiate();
 		ERR_FAIL_COND_V_MSG(!instance, godot_cli::make_error(0, "Failed to instantiate scene"), "");
 
-		Node *root = scene_tree->get_root();
+		Node *root = static_cast<Node*>(scene_tree->get_root().ptr());
 		while (root->get_child_count() > 0) {
 			Node *child = root->get_child(0);
 			root->remove_child(child);
@@ -685,13 +726,13 @@ HANDLER(debug_inspect) {
 
 	Node *node = nullptr;
 	if (!node_path.is_empty()) {
-		node = scene_tree->get_root()->get_node(NodePath(node_path));
+		node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 		ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 	}
 
 	Object *target = node;
 	if (!target) {
-		target = scene_tree->get_root(); // default to root
+		target = static_cast<Node*>(scene_tree->get_root().ptr()); // default to root
 	}
 
 	Dictionary result;
@@ -862,7 +903,8 @@ HANDLER(render_screenshot) {
 	SceneTree *scene_tree = SceneTree::get_singleton();
 	ERR_FAIL_COND_V(!scene_tree, godot_cli::make_error(0, "No scene tree available"));
 
-	Viewport *viewport = scene_tree->get_root();
+	Window *root_win = scene_tree->get_root();
+	Viewport *viewport = root_win.ptr();
 	ERR_FAIL_COND_V(!viewport, godot_cli::make_error(0, "No root viewport available"));
 
 	// Get viewport texture and convert to image.
