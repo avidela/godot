@@ -28,7 +28,7 @@
 /**************************************************************************/
 
 #include "cli_server.h"
-#include "cli_types.h"
+#include "modules/godot_cli/cli_types.h"
 #include "command_handler.h"
 
 #include "core/io/ip.h"
@@ -55,7 +55,7 @@ Error GodotCLIServer::start(int p_port) {
 	server.instantiate();
 
 	IPAddress bind_ip = IPAddress("127.0.0.1");
-	Error err = server->listen(bind_ip, listen_port);
+	Error err = server->listen(listen_port, bind_ip);
 	if (err != OK) {
 		ERR_PRINT(vformat("GodotCLIServer: Failed to listen on 127.0.0.1:%d", listen_port));
 		return err;
@@ -74,7 +74,7 @@ void GodotCLIServer::stop() {
 	running = false;
 
 	if (current_client.is_valid() && current_client->connection.is_valid()) {
-		current_client->connection->disconnect();
+		current_client->connection->disconnect_from_host();
 		current_client.unref();
 	}
 
@@ -99,13 +99,13 @@ void GodotCLIServer::poll() {
 	// Handle data from the current client.
 	if (current_client.is_valid()) {
 		Error err = current_client->handle_data();
-		if (err != OK) {
+		if (err != OK && err != ERR_BUSY) {
 			_on_client_disconnected();
 			return;
 		}
 
 		err = current_client->send_data();
-		if (err != OK) {
+		if (err != OK && err != ERR_BUSY) {
 			_on_client_disconnected();
 			return;
 		}
@@ -127,7 +127,7 @@ Error GodotCLIServer::_on_client_connected() {
 void GodotCLIServer::_on_client_disconnected() {
 	if (current_client.is_valid()) {
 		if (current_client->connection.is_valid()) {
-			current_client->connection->disconnect();
+			current_client->connection->disconnect_from_host();
 		}
 		current_client.unref();
 		print_line("GodotCLIServer: Client disconnected.");
@@ -171,64 +171,79 @@ Dictionary GodotCLIServer::_parse_command(const String &p_message) {
 }
 
 // ---- CLIRequest implementation ----
+// Pattern follows GDScriptLanguageProtocol::LSPeer::handle_data
 
 Error GodotCLIServer::CLIRequest::handle_data() {
 	if (connection.is_null()) {
 		return ERR_CONNECTION_ERROR;
 	}
 
-	// Read available bytes.
-	while (connection->get_available_bytes() > 0 && buffer_pos < godot_cli::MAX_MESSAGE_SIZE) {
-		int read = 0;
-		Error err = connection->partial_recv(&buffer[buffer_pos], 1, read);
-		if (err != OK) {
-			return err;
-		}
-		if (read == 0) {
-			break;
-		}
-		buffer_pos += read;
-	}
+	int read = 0;
 
-	// Parse HTTP-like header: "Content-Length: <num>\r\n\r\n"
+	// Read headers.
 	if (!has_header) {
-		String header_str = String::utf8((const char *)buffer, buffer_pos);
-		int header_end = header_str.find("\r\n\r\n");
-		if (header_end == -1) {
-			// Wait for more data.
-			return OK;
-		}
+		while (true) {
+			if (buffer_pos >= godot_cli::MAX_MESSAGE_SIZE) {
+				buffer_pos = 0;
+				ERR_FAIL_V_MSG(ERR_OUT_OF_MEMORY, "GodotCLI: Request header too big");
+			}
+			Error err = connection->get_partial_data(&buffer[buffer_pos], 1, read);
+			if (err != OK) {
+				return err;
+			} else if (read != 1) {
+				return ERR_BUSY; // No data yet, try again next poll.
+			}
 
-		// Parse Content-Length.
-		Vector<String> lines = header_str.split("\r\n");
-		for (int i = 0; i < lines.size(); i++) {
-			if (lines[i].begins_with("Content-Length:")) {
-				String len_str = lines[i].substr(15).strip_edges();
-				content_length = len_str.to_int();
+			char *r = (char *)buffer;
+			int l = buffer_pos;
+
+			// End of headers: \r\n\r\n
+			if (l > 3 && r[l] == '\n' && r[l - 1] == '\r' && r[l - 2] == '\n' && r[l - 3] == '\r') {
+				r[l - 3] = '\0';
+				String header = String::utf8(r);
+				content_length = header.substr(16).to_int();
+				has_header = true;
+				buffer_pos = 0;
 				break;
 			}
+			buffer_pos++;
 		}
-
-		if (content_length <= 0) {
-			ERR_PRINT("GodotCLIServer: Invalid or missing Content-Length header.");
-			return ERR_PARSE_ERROR;
-		}
-
-		has_header = true;
-		// Move remaining data after header to front.
-		int header_size = header_end + 4; // including \r\n\r\n
-		int remaining = buffer_pos - header_size;
-		if (remaining > 0) {
-			memmove(buffer, &buffer[header_size], remaining);
-		}
-		buffer_pos = remaining;
 	}
 
 	// Read body.
 	if (has_header && !has_content) {
-		if (buffer_pos >= content_length) {
-			has_content = true;
+		while (buffer_pos < content_length) {
+			if (buffer_pos >= godot_cli::MAX_MESSAGE_SIZE) {
+				buffer_pos = 0;
+				has_header = false;
+				ERR_FAIL_COND_V_MSG(buffer_pos >= godot_cli::MAX_MESSAGE_SIZE, ERR_OUT_OF_MEMORY, "GodotCLI: Request content too big");
+			}
+			Error err = connection->get_partial_data(&buffer[buffer_pos], 1, read);
+			if (err != OK) {
+				return err;
+			} else if (read != 1) {
+				return ERR_BUSY;
+			}
+			buffer_pos++;
 		}
+
+		// Parse the message.
+		String msg = String::utf8((const char *)buffer, buffer_pos);
+		String output = _process_message(msg);
+
+		// Format response with content-length header.
+		CharString c_res = output.utf8();
+		CharString c_header = vformat("Content-Length: %d\r\n\r\n", c_res.length()).utf8();
+
+		// Queue full response.
+		response_queue.push_back(c_header);
+		response_queue.push_back(c_res);
+
+		// Reset for next message.
+		buffer_pos = 0;
+		has_header = false;
+		has_content = false;
+		content_length = 0;
 	}
 
 	return OK;
@@ -247,9 +262,15 @@ Error GodotCLIServer::CLIRequest::send_data() {
 			return err;
 		}
 		if (written < data.length()) {
-			break;
+			break; // Buffer full, try again next poll.
 		}
 		responses_sent++;
+	}
+
+	// Clean up sent responses.
+	if (responses_sent >= response_queue.size()) {
+		response_queue.clear();
+		responses_sent = 0;
 	}
 
 	return OK;

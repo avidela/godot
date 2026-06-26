@@ -29,9 +29,11 @@
 
 #pragma once
 
+#include "core/io/json.h"
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
 #include "core/object/ref_counted.h"
+#include "modules/godot_cli/cli_types.h"
 
 class GodotCLICommandHandler;
 

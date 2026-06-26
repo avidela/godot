@@ -27,16 +27,18 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
-#include "cli_types.h"
+#include "modules/godot_cli/cli_types.h"
 #include "core/config/engine.h"
 #include "core/variant/variant_utility.h"
+#include "scene/2d/node_2d.h"
+#include "scene/gui/control.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 
 namespace godot_cli {
 
 // Recursively build a snapshot of a node and its children.
-static Dictionary _node_snapshot(Node *p_node, int p_max_depth = 10, int p_depth = 0, int &r_ref_counter) {
+static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int &r_ref_counter) {
 	Dictionary node_info;
 
 	String ref = vformat("n%d", r_ref_counter++);

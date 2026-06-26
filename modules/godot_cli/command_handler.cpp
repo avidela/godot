@@ -28,7 +28,7 @@
 /**************************************************************************/
 
 #include "command_handler.h"
-#include "cli_types.h"
+#include "modules/godot_cli/cli_types.h"
 
 #include "core/config/engine.h"
 #include "core/config/project_settings.h"

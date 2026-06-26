@@ -34,8 +34,10 @@
 
 namespace godot_cli {
 
-// Maximum JSON message size (4 MB).
-constexpr int MAX_MESSAGE_SIZE = 4194304;
+// Maximum JSON message size (64 KB).
+// 4MB on the stack would overflow, so we keep it reasonable.
+// Larger messages (like screenshots) are sent as base64 in the response body.
+constexpr int MAX_MESSAGE_SIZE = 65536;
 
 // Default port for the CLI daemon.
 constexpr int DEFAULT_PORT = 3100;
