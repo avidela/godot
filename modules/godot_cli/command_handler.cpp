@@ -740,18 +740,6 @@ HANDLER(game_resume) {
 
 HANDLER(game_step) {
 	int frames = p_params.get("frames", 1);
-	// Advance the game by N frames.
-	// We do this by requesting the main loop to run N iterations.
-	// In daemon mode, the main loop runs continuously, so this just
-	// ensures we capture at least N frames before returning.
-	// For a true step mode, we would need to pause and manually iterate.
-	SceneTree *scene_tree = SceneTree::get_singleton();
-	if (scene_tree) {
-		// Force a fixed number of iterations by using OS delay.
-		// The main loop runs at ~60 FPS, so N frames ≈ N/60 seconds.
-		double step_time = frames / 60.0;
-		OS::get_singleton()->delay_usec(int(step_time * 1000000));
-	}
 	_push_log(vformat("game/step: %d frames", frames));
 	Dictionary result;
 	result["frames"] = frames;
@@ -780,7 +768,9 @@ HANDLER(input_key) {
 
 	Ref<InputEventKey> key_event;
 	key_event.instantiate();
-	key_event->set_keycode(find_keycode(key_str));
+	Key keycode = find_keycode(key_str);
+	key_event->set_keycode(keycode);
+	key_event->set_physical_keycode(keycode);
 	key_event->set_pressed(pressed);
 	key_event->set_echo(p_params.get("echo", false));
 
