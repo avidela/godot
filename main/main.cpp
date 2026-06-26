@@ -156,6 +156,10 @@
 #endif // TOOLS_ENABLED && !GDSCRIPT_NO_LSP
 #endif // MODULE_GDSCRIPT_ENABLED
 
+#ifdef MODULE_GODOT_CLI_ENABLED
+#include "modules/godot_cli/cli_server.h"
+#endif
+
 /* Static members */
 
 // Singletons
@@ -236,6 +240,12 @@ static int converter_max_line_length = 100000;
 HashMap<Main::CLIScope, Vector<String>> forwardable_cli_arguments;
 #endif
 static bool single_threaded_scene = false;
+
+// Daemon (CLI) mode
+#ifdef MODULE_GODOT_CLI_ENABLED
+static bool cli_daemon_enabled = false;
+static int cli_daemon_port = 3100;
+#endif
 
 // Display
 
@@ -624,6 +634,8 @@ void Main::print_help(const char *p_binary) {
 	print_help_option("--text-driver <driver>", "Text driver (used for font rendering, bidirectional support and shaping).\n");
 	print_help_option("--tablet-driver <driver>", "Pen tablet input driver.\n");
 	print_help_option("--headless", "Enable headless mode (--display-driver headless --audio-driver Dummy). Useful for servers and with --script.\n");
+	print_help_option("--daemon", "Enable CLI daemon mode for AI agent control (starts a TCP server on localhost).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
+	print_help_option("--daemon-port <port>", "Port for the CLI daemon (default: 3100).\n", CLI_OPTION_AVAILABILITY_TEMPLATE_UNSAFE);
 	print_help_option("--log-file <file>", "Write output/error log to the specified path instead of the default location defined by the project.\n");
 	print_help_option("", "<file> path should be absolute or relative to the project directory.\n");
 	print_help_option("--write-movie <file>", "Write a video to the specified path (usually with .avi or .png extension).\n");
@@ -1501,6 +1513,19 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 
 			audio_driver = NULL_AUDIO_DRIVER;
 			display_driver = NULL_DISPLAY_DRIVER;
+
+#ifdef MODULE_GODOT_CLI_ENABLED
+		} else if (arg == "--daemon") { // enable CLI daemon mode
+			cli_daemon_enabled = true;
+		} else if (arg == "--daemon-port") {
+			if (N) {
+				cli_daemon_port = N->get().to_int();
+				N = N->next();
+			} else {
+				OS::get_singleton()->print("Missing port number after --daemon-port, aborting.\n");
+				goto error;
+			}
+#endif
 
 		} else if (arg == "--embedded") { // Enable embedded mode.
 #ifdef MACOS_ENABLED
@@ -4882,6 +4907,18 @@ int Main::start() {
 	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Start");
 	OS::get_singleton()->benchmark_dump();
 
+#ifdef MODULE_GODOT_CLI_ENABLED
+	if (cli_daemon_enabled) {
+		GodotCLIServer *cli_server = GodotCLIServer::get_singleton();
+		if (cli_server) {
+			Error err = cli_server->start(cli_daemon_port);
+			if (err != OK) {
+				OS::get_singleton()->print("Failed to start Godot CLI daemon on port %d.\n", cli_daemon_port);
+			}
+		}
+	}
+#endif
+
 	return EXIT_SUCCESS;
 }
 
@@ -4915,6 +4952,11 @@ static uint64_t navigation_process_max = 0;
 // will terminate the program. In case of failure, the OS exit code needs
 // to be set explicitly here (defaults to EXIT_SUCCESS).
 bool Main::iteration() {
+#ifdef MODULE_GODOT_CLI_ENABLED
+	if (GodotCLIServer::get_singleton()) {
+		GodotCLIServer::get_singleton()->poll();
+	}
+#endif
 	GodotProfileZone("Main::iteration");
 	GodotProfileZoneGroupedFirst(_profile_zone, "prepare");
 	iterating++;
