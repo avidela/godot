@@ -225,6 +225,22 @@ godot-cli project/settings '{"action":"get","key":"application/config/name"}'
 godot-cli project/settings '{"action":"set","key":"application/config/name","value":"MyGame"}'
 ```
 
+### Input Bindings
+
+⚠️ **Important:** Input bindings cannot be written as JSON dictionaries in project.godot:
+```ini
+# THIS DOES NOT WORK:
+[input]
+move_right={"deadzone":0.5,"events":[{"type":"key","keycode":"KEY_D"}]}
+```
+
+Godot 4 requires full resource serialization. **Always use the daemon's `project/settings` command to create input bindings**:
+```bash
+godot-cli project/settings '{"action":"set","key":"input/move_right","value":{"deadzone":0.5,"events":[{"type":"key","keycode":"KEY_D"}]}}'
+```
+
+Numeric keycodes: KEY_A=65, KEY_D=68, KEY_W=87, KEY_SPACE=32, KEY_LEFT=4194319, KEY_RIGHT=4194321
+
 ## Snapshots
 
 After every command, godot-cli returns a structured snapshot of the current scene tree with node refs (n0, n1, n2...) that you can use to target subsequent commands.
