@@ -34,6 +34,14 @@
 #include "scene/2d/node_2d.h"
 #include "scene/gui/control.h"
 #include "scene/main/window.h"
+#include "scene/2d/physics/collision_shape_2d.h"
+#include "scene/resources/2d/shape_2d.h"
+#include "scene/gui/label.h"
+#include "scene/2d/sprite_2d.h"
+#include "scene/2d/physics/character_body_2d.h"
+#include "scene/resources/2d/rectangle_shape_2d.h"
+#include "scene/resources/2d/circle_shape_2d.h"
+#include "scene/gui/color_rect.h"
 
 #ifndef _3D_DISABLED
 #include "scene/3d/node_3d.h"
@@ -42,6 +50,56 @@
 #include "scene/main/scene_tree.h"
 
 namespace godot_cli {
+
+// Helper: get exported script properties (members with @export)
+static void _add_script_properties(Node *p_node, Dictionary &r_props) {
+	Variant script_var = p_node->get_script();
+	Object *script_obj = script_var;
+	Script *script = Object::cast_to<Script>(script_obj);
+	if (!script) return;
+
+	List<PropertyInfo> pinfo;
+	script->get_script_property_list(&pinfo);
+	Array script_props;
+	for (const PropertyInfo &E : pinfo) {
+		if (E.usage & PROPERTY_USAGE_SCRIPT_VARIABLE) {
+			Dictionary pd;
+			pd["name"] = E.name;
+			pd["type"] = Variant::get_type_name(E.type);
+			pd["value"] = VariantUtilityFunctions::var_to_str(p_node->get(E.name));
+			script_props.push_back(pd);
+		}
+	}
+	if (script_props.size() > 0) {
+		r_props["script_vars"] = script_props;
+	}
+}
+
+// Helper: get node groups
+static Array _get_node_groups(Node *p_node) {
+	Array groups;
+	List<Node::GroupInfo> ginfo;
+	p_node->get_groups(&ginfo);
+	for (const Node::GroupInfo &E : ginfo) {
+		groups.push_back(E.name);
+	}
+	return groups;
+}
+
+// Helper: get signal connections for a node
+static Array _get_node_signals(Node *p_node) {
+	Array sigs;
+	List<Object::Connection> connections;
+	p_node->get_all_signal_connections(&connections);
+	for (const Object::Connection &E : connections) {
+		Dictionary cd;
+		cd["signal"] = E.signal.get_name();
+		cd["target"] = E.callable.get_object() ? E.callable.get_object()->to_string() : "";
+		cd["method"] = E.callable.get_method();
+		sigs.push_back(cd);
+	}
+	return sigs;
+}
 
 // Recursively build a snapshot of a node and its children.
 static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int &r_ref_counter) {
@@ -53,54 +111,134 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 	node_info["type"] = p_node->get_class();
 	node_info["path"] = p_node->get_path();
 
-	// Include key properties based on type.
+	// Groups.
+	Array groups = _get_node_groups(p_node);
+	if (groups.size() > 0) {
+		node_info["groups"] = groups;
+	}
+
+	// Signal connections.
+	Array signals = _get_node_signals(p_node);
+	if (signals.size() > 0) {
+		node_info["signals"] = signals;
+	}
+
+	// Rich properties based on concrete type.
+	Dictionary props;
+
 	Node2D *node2d = Object::cast_to<Node2D>(p_node);
 #ifndef _3D_DISABLED
 	Node3D *node3d = Object::cast_to<Node3D>(p_node);
 #endif
 	Control *ctrl = Object::cast_to<Control>(p_node);
 
+	// Always include visibility and position.
+	if (node2d || ctrl) {
+		props["visible"] = Object::cast_to<CanvasItem>(p_node)->is_visible_in_tree();
+	}
+
 	if (node2d) {
-		Dictionary props;
 		props["position"] = VariantUtilityFunctions::var_to_str(node2d->get_position());
+		props["global_position"] = VariantUtilityFunctions::var_to_str(node2d->get_global_position());
 		props["rotation"] = node2d->get_rotation();
 		props["scale"] = VariantUtilityFunctions::var_to_str(node2d->get_scale());
-		props["visible"] = node2d->is_visible();
-		node_info["properties"] = props;
+		props["z_index"] = node2d->get_z_index();
 #ifndef _3D_DISABLED
 	} else if (node3d) {
-		Dictionary props;
 		props["position"] = VariantUtilityFunctions::var_to_str(node3d->get_position());
+		props["global_position"] = VariantUtilityFunctions::var_to_str(node3d->get_global_position());
 		props["rotation"] = VariantUtilityFunctions::var_to_str(node3d->get_rotation());
 		props["scale"] = VariantUtilityFunctions::var_to_str(node3d->get_scale());
-		props["visible"] = node3d->is_visible();
-		node_info["properties"] = props;
 #endif
 	} else if (ctrl) {
-		Dictionary props;
 		props["position"] = VariantUtilityFunctions::var_to_str(ctrl->get_position());
 		props["size"] = VariantUtilityFunctions::var_to_str(ctrl->get_size());
-		props["visible"] = ctrl->is_visible();
-		node_info["properties"] = props;
-	} else {
-		// Generic: include position if available.
-		if (p_node->has_method("get_position")) {
-			Dictionary props;
-			props["position"] = VariantUtilityFunctions::var_to_str(p_node->call("get_position"));
-			node_info["properties"] = props;
+		props["global_position"] = VariantUtilityFunctions::var_to_str(ctrl->get_global_position());
+		props["rect_size"] = VariantUtilityFunctions::var_to_str(ctrl->get_rect().size);
+
+		// Label-specific: text content
+		Label *label = Object::cast_to<Label>(p_node);
+		if (label) {
+			props["text"] = label->get_text();
+			props["font_size"] = label->get_theme_font_size("font_size");
 		}
+	}
+
+	// Sprite2D: texture path
+	Sprite2D *sprite = Object::cast_to<Sprite2D>(p_node);
+	if (sprite) {
+		Ref<Texture2D> tex = sprite->get_texture();
+		if (tex.is_valid()) {
+			props["texture"] = tex->get_path();
+		}
+		props["centered"] = sprite->is_centered();
+	}
+
+	// CollisionShape2D: shape details
+	CollisionShape2D *col_shape = Object::cast_to<CollisionShape2D>(p_node);
+	if (col_shape) {
+		Ref<Shape2D> shape = col_shape->get_shape();
+		if (shape.is_valid()) {
+			Dictionary shape_info;
+			shape_info["type"] = shape->get_class();
+			// Get shape-specific properties
+			RectangleShape2D *rect = Object::cast_to<RectangleShape2D>(shape.ptr());
+			if (rect) {
+				shape_info["size"] = VariantUtilityFunctions::var_to_str(rect->get_size());
+			}
+			CircleShape2D *circle = Object::cast_to<CircleShape2D>(shape.ptr());
+			if (circle) {
+				shape_info["radius"] = circle->get_radius();
+			}
+			props["collision_shape"] = shape_info;
+		}
+		props["disabled"] = col_shape->is_disabled();
+	}
+
+	// ColorRect: color property
+	ColorRect *color_rect = Object::cast_to<ColorRect>(p_node);
+	if (color_rect) {
+		props["color"] = VariantUtilityFunctions::var_to_str(color_rect->get_color());
+		props["size"] = VariantUtilityFunctions::var_to_str(color_rect->get_size());
+	}
+
+	// CharacterBody2D: physics state
+	CharacterBody2D *char_body = Object::cast_to<CharacterBody2D>(p_node);
+	if (char_body) {
+		props["velocity"] = VariantUtilityFunctions::var_to_str(char_body->get_velocity());
+		props["on_floor"] = char_body->is_on_floor();
+		props["on_wall"] = char_body->is_on_wall();
+		props["floor_normal"] = VariantUtilityFunctions::var_to_str(char_body->get_floor_normal());
+	}
+
+	if (props.size() > 0) {
+		node_info["properties"] = props;
 	}
 
 	// Attached script.
 	{
 		Variant script_var = p_node->get_script();
-		Ref<Script> script_ref = script_var;
-		if (script_ref.is_valid()) {
-			node_info["script"] = script_ref->get_path();
+		Object *script_obj = script_var;
+		Script *script = Object::cast_to<Script>(script_obj);
+		if (script) {
+			node_info["script"] = script->get_path();
 		}
 	}
 
-	// Child count.
+	// Script exported variables.
+	Dictionary extra_props;
+	_add_script_properties(p_node, extra_props);
+	if (extra_props.size() > 0) {
+		node_info["script_vars"] = extra_props["script_vars"];
+	}
+
+	// Editor description.
+	String desc = p_node->get_editor_description();
+	if (!desc.is_empty()) {
+		node_info["description"] = desc;
+	}
+
+	// Children.
 	int child_count = p_node->get_child_count();
 	if (child_count > 0) {
 		node_info["child_count"] = child_count;
@@ -145,7 +283,7 @@ Dictionary build_snapshot() {
 	Array root_nodes;
 	for (int i = 0; i < root->get_child_count(); i++) {
 		Node *child = root->get_child(i);
-		Dictionary child_info = _node_snapshot(child, 10, 0, ref_counter);
+		Dictionary child_info = _node_snapshot(child, 8, 0, ref_counter);
 		root_nodes.push_back(child_info);
 	}
 	result["nodes"] = root_nodes;
