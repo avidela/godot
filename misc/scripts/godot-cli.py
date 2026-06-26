@@ -209,29 +209,22 @@ def _format_response(response, raw=False):
         result = response.get("result", {})
         if result:
             lines.append("── Result ──────────────────────────────────────")
-            if "message" in result:
-                lines.append(f"  {result['message']}")
-            if "path" in result:
-                lines.append(f"  Path: {result['path']}")
-            if "type" in result:
-                lines.append(f"  Type: {result['type']}")
-            if "name" in result:
-                lines.append(f"  Name: {result['name']}")
-            if "fps" in result:
-                lines.append(f"  FPS: {result['fps']}")
-            if "width" in result and "height" in result:
-                lines.append(f"  Size: {result['width']}x{result['height']}")
-                lines.append(f"  Format: {result.get('format', 'unknown')}")
-                if "file" in result:
-                    lines.append(f"  File: {result['file']}")
-            if "logs" in result:
-                for log in result["logs"]:
-                    lines.append(f"  {log}")
-            if "errors" in result:
-                for err in result["errors"]:
-                    lines.append(f"  ! {err}")
-            if "screenshot" in response.get("screenshot", {}):
-                lines.append("  (screenshot data omitted)")
+            for k, v in result.items():
+                if k in ('_ok', '_error', '_code', '_no_snapshot', 'data'):
+                    continue
+                if isinstance(v, list):
+                    lines.append(f"  {k}: [{len(v)} items]")
+                elif isinstance(v, dict):
+                    lines.append(f"  {k}: {{{len(v)} keys}}")
+                    for k2, v2 in list(v.items())[:5]:
+                        if isinstance(v2, (list, dict)):
+                            lines.append(f"    {k2}: ({len(v2)} items)")
+                        else:
+                            lines.append(f"    {k2}: {str(v2)[:80]}")
+                elif isinstance(v, str) and len(v) > 80:
+                    lines.append(f"  {k}: {str(v)[:80]}...")
+                else:
+                    lines.append(f"  {k}: {v}")
     else:
         lines.append(f"✗ Error: {response.get('error', 'Unknown error')}")
 

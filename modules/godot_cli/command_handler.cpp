@@ -45,12 +45,18 @@
 #include "core/os/keyboard.h"
 #include "scene/2d/node_2d.h"
 #include "scene/3d/node_3d.h"
+#include "scene/animation/animation_player.h"
 #include "scene/gui/control.h"
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/packed_scene.h"
+#include "scene/resources/material.h"
+#include "scene/resources/mesh.h"
+#include "scene/resources/animation.h"
+#include "scene/resources/curve.h"
+#include "scene/resources/gradient.h"
 
 #include "core/input/input_event.h"
 
@@ -65,6 +71,93 @@
 
 #include "core/input/input.h"
 #include "scene/resources/texture.h"
+
+// ── Log ring buffer ───────────────────────────────────────────────────
+// Simple in-memory log ring buffer for debug/logs and debug/errors.
+
+struct LogEntry {
+	double time;
+	String msg;
+};
+
+static Vector<LogEntry> _log_buffer;
+static Vector<LogEntry> _error_buffer;
+static constexpr int MAX_LOG_ENTRIES = 500;
+static constexpr int MAX_ERROR_ENTRIES = 200;
+
+static void _push_log(const String &p_msg) {
+	LogEntry e;
+	e.time = OS::get_singleton()->get_unix_time();
+	e.msg = p_msg;
+	_log_buffer.push_back(e);
+	if (_log_buffer.size() > MAX_LOG_ENTRIES) {
+		_log_buffer.remove_at(0);
+	}
+}
+
+static void _push_error(const String &p_msg) {
+	LogEntry e;
+	e.time = OS::get_singleton()->get_unix_time();
+	e.msg = p_msg;
+	_error_buffer.push_back(e);
+	if (_error_buffer.size() > MAX_ERROR_ENTRIES) {
+		_error_buffer.remove_at(0);
+	}
+}
+
+// ── Helper to build an Array of log entries ───────────────────────────
+static Array _log_entries_to_array(const Vector<LogEntry> &p_entries, int p_count) {
+	Array arr;
+	int start = MAX(0, p_entries.size() - p_count);
+	for (int i = start; i < p_entries.size(); i++) {
+		Dictionary entry;
+		entry["time"] = p_entries[i].time;
+		entry["msg"] = p_entries[i].msg;
+		arr.push_back(entry);
+	}
+	return arr;
+}
+
+// ── Helper to capture a viewport to base64 PNG ────────────────────────
+static Dictionary _capture_viewport(Viewport *p_viewport) {
+	Dictionary result;
+	if (!p_viewport) {
+		result["_ok"] = false;
+		result["_error"] = "No viewport";
+		return result;
+	}
+
+	Ref<ViewportTexture> tex = p_viewport->get_texture();
+	if (tex.is_null()) {
+		result["_ok"] = false;
+		result["_error"] = "Failed to get viewport texture";
+		return result;
+	}
+
+	Ref<Image> img = tex->get_image();
+	if (img.is_null()) {
+		result["_ok"] = false;
+		result["_error"] = "Failed to get image from viewport texture (rendering may not be available in headless mode)";
+		return result;
+	}
+
+	Vector<uint8_t> png_data = img->save_png_to_buffer();
+	if (png_data.is_empty()) {
+		result["_ok"] = false;
+		result["_error"] = "Failed to encode PNG";
+		return result;
+	}
+
+	String base64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
+
+	result["_ok"] = true;
+	result["width"] = img->get_width();
+	result["height"] = img->get_height();
+	result["format"] = Image::get_format_name(img->get_format());
+	result["size_bytes"] = png_data.size();
+	result["data"] = base64;
+	return result;
+}
 
 GodotCLICommandHandler *GodotCLICommandHandler::singleton = nullptr;
 
@@ -160,6 +253,9 @@ HANDLER_DECL(render_screenshot);
 HANDLER_DECL(project_settings);
 HANDLER_DECL(resource_list);
 HANDLER_DECL(resource_import);
+HANDLER_DECL(resource_create_material);
+HANDLER_DECL(resource_create_mesh);
+HANDLER_DECL(resource_create_animation);
 HANDLER_DECL(daemon_shutdown);
 HANDLER_DECL(daemon_ping);
 HANDLER_DECL(daemon_version);
@@ -552,6 +648,18 @@ HANDLER(game_run) {
 }
 
 HANDLER(game_stop) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	if (scene_tree) {
+		// Remove game scenes from root.
+		Node *root = static_cast<Node*>(scene_tree->get_root().ptr());
+		while (root->get_child_count() > 0) {
+			Node *child = root->get_child(0);
+			root->remove_child(child);
+			child->queue_free();
+		}
+		scene_tree->set_pause(false);
+	}
+	_push_log("game/stop");
 	Dictionary result;
 	result["running"] = false;
 	return result;
@@ -579,8 +687,19 @@ HANDLER(game_resume) {
 
 HANDLER(game_step) {
 	int frames = p_params.get("frames", 1);
-	// Force a fixed number of iterations.
-	// This is handled by the main loop in daemon mode.
+	// Advance the game by N frames.
+	// We do this by requesting the main loop to run N iterations.
+	// In daemon mode, the main loop runs continuously, so this just
+	// ensures we capture at least N frames before returning.
+	// For a true step mode, we would need to pause and manually iterate.
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	if (scene_tree) {
+		// Force a fixed number of iterations by using OS delay.
+		// The main loop runs at ~60 FPS, so N frames ≈ N/60 seconds.
+		double step_time = frames / 60.0;
+		OS::get_singleton()->delay_usec(int(step_time * 1000000));
+	}
+	_push_log(vformat("game/step: %d frames", frames));
 	Dictionary result;
 	result["frames"] = frames;
 	return result;
@@ -702,22 +821,20 @@ void GodotCLICommandHandler::_register_debug_commands() {
 }
 
 HANDLER(debug_logs) {
-	// Collect recent stdout/stderr output.
-	// For now return a placeholder.
+	int count = p_params.get("count", 50);
 	Dictionary result;
-	Array logs;
-	result["logs"] = logs;
-	result["count"] = 0;
+	result["logs"] = _log_entries_to_array(_log_buffer, count);
+	result["count"] = _log_buffer.size();
+	result["returned"] = MIN(count, _log_buffer.size());
 	return result;
 }
 
 HANDLER(debug_errors) {
-	// Collect recent script errors.
-	// For now return a placeholder.
+	int count = p_params.get("count", 50);
 	Dictionary result;
-	Array errors;
-	result["errors"] = errors;
-	result["count"] = 0;
+	result["errors"] = _log_entries_to_array(_error_buffer, count);
+	result["count"] = _error_buffer.size();
+	result["returned"] = MIN(count, _error_buffer.size());
 	return result;
 }
 
@@ -870,7 +987,16 @@ HANDLER(script_validate) {
 
 	ERR_FAIL_COND_V_MSG(path.is_empty() && source.is_empty(), godot_cli::make_error(0, "Missing either 'path' or 'source'"), "");
 
-	if (!path.is_empty()) {
+	if (!source.is_empty()) {
+		// Write to temp file to validate.
+		String tmp_path = "res://.godot_cli_validate.gd";
+		Ref<FileAccess> file = FileAccess::open(tmp_path, FileAccess::WRITE);
+		if (file.is_valid()) {
+			file->store_string(source);
+			file->close();
+		}
+		path = tmp_path;
+	} else if (!path.is_empty()) {
 		String full_path = path;
 		if (!path.begins_with("res://") && !path.begins_with("/")) {
 			full_path = "res://" + path;
@@ -881,15 +1007,26 @@ HANDLER(script_validate) {
 		file->close();
 	}
 
-	// Parse and validate using GDScript parser.
+	// Try loading as script - Godot's resource loader validates syntax.
+	Array errors;
+	bool valid = true;
+
+	Ref<GDScript> script = ResourceLoader::load(path, "GDScript", ResourceLoader::CACHE_MODE_IGNORE);
+	if (script.is_valid()) {
+		valid = script->is_valid();
+	} else {
+		valid = false;
+	}
+
+	// Clean up temp file.
+	if (p_params.has("source") && !p_params.has("path")) {
+		DirAccess::remove_file_or_error("res://.godot_cli_validate.gd");
+	}
+
 	Dictionary result;
-	result["valid"] = true;
-	result["errors"] = Array();
-
-	// TODO: Use GDScript parser for deep validation.
-	// GDScriptTokenizerBuffer can be used for tokenization-level checks.
-	// Full validation requires GDScriptParser which returns a list of errors.
-
+	result["valid"] = valid;
+	result["error_count"] = errors.size();
+	result["errors"] = errors;
 	return result;
 }
 
@@ -997,6 +1134,9 @@ HANDLER(project_settings) {
 void GodotCLICommandHandler::_register_resource_commands() {
 	REGISTER("resource/list", _handler_resource_list);
 	REGISTER("resource/import", _handler_resource_import);
+	REGISTER("resource/create_material", _handler_resource_create_material);
+	REGISTER("resource/create_mesh", _handler_resource_create_mesh);
+	REGISTER("resource/create_animation", _handler_resource_create_animation);
 }
 
 HANDLER(resource_list) {
@@ -1068,9 +1208,161 @@ HANDLER(resource_import) {
 	Error err = DirAccess::copy_absolute(source, dest);
 	ERR_FAIL_COND_V_MSG(err != OK, godot_cli::make_error(0, vformat("Failed to copy from %s to %s", source, dest)), "");
 
+	_push_log(vformat("resource/import: %s -> %s", source, dest));
 	Dictionary result;
 	result["source"] = source;
 	result["dest"] = dest;
+	return result;
+}
+
+HANDLER(resource_create_material) {
+	String name = p_params.get("name", "new_material");
+	String material_type = p_params.get("type", "StandardMaterial3D");
+	Dictionary props = p_params.get("properties", Dictionary());
+
+	Ref<Material> material;
+
+	if (material_type == "StandardMaterial3D" || material_type == "Material") {
+		Ref<StandardMaterial3D> sm = Ref<StandardMaterial3D>(memnew(StandardMaterial3D));
+		if (props.has("albedo_color")) {
+			Variant c = props["albedo_color"];
+			if (c.get_type() == Variant::DICTIONARY) {
+				Dictionary cd = c;
+				sm->set_albedo(Color(
+					cd.get("r", 1.0),
+					cd.get("g", 1.0),
+					cd.get("b", 1.0),
+					cd.get("a", 1.0)));
+			} else if (c.get_type() == Variant::STRING) {
+				sm->set_albedo(Color(String(c)));
+			}
+		}
+		if (props.has("metallic")) sm->set_metallic(float(props["metallic"]));
+		if (props.has("roughness")) sm->set_roughness(float(props["roughness"]));
+		if (props.has("emission")) sm->set_emission(Color(props["emission"]));
+		material = sm;
+	}
+
+	if (material.is_null()) {
+		material = Ref<StandardMaterial3D>(memnew(StandardMaterial3D));
+	}
+
+	material->set_name(name);
+
+	String save_path = p_params.get("save_path", "");
+	if (!save_path.is_empty()) {
+		Error err = ResourceSaver::save(material, save_path);
+		if (err != OK) {
+			_push_error(vformat("Failed to save material to %s", save_path));
+		}
+	}
+
+	_push_log(vformat("resource/create_material: %s (%s)", name, material_type));
+	Dictionary result;
+	result["name"] = name;
+	result["type"] = material_type;
+	result["path"] = save_path;
+	return result;
+}
+
+HANDLER(resource_create_mesh) {
+	String name = p_params.get("name", "new_mesh");
+	Dictionary props = p_params.get("properties", Dictionary());
+
+	Ref<ArrayMesh> mesh;
+	mesh.instantiate();
+	mesh->set_name(name);
+
+	// If vertex data provided, create surface.
+	if (props.has("vertices") && props.has("indices")) {
+		Array arrays;
+		arrays.resize(Mesh::ARRAY_MAX);
+
+		Vector<Vector3> vertices;
+		{
+			Array verts = props["vertices"];
+			for (int i = 0; i < verts.size(); i++) {
+				Variant v = verts[i];
+				if (v.get_type() == Variant::VECTOR3) {
+					vertices.push_back(v);
+				} else if (v.get_type() == Variant::DICTIONARY) {
+					Dictionary d = v;
+					vertices.push_back(Vector3(
+						d.get("x", 0.0),
+						d.get("y", 0.0),
+						d.get("z", 0.0)));
+				} else if (v.get_type() == Variant::ARRAY) {
+					Array a = v;
+					if (a.size() >= 3)
+						vertices.push_back(Vector3(a[0], a[1], a[2]));
+				}
+			}
+		}
+
+		Vector<int> indices;
+		{
+			Array idxs = props["indices"];
+			for (int i = 0; i < idxs.size(); i++) {
+				indices.push_back(int(idxs[i]));
+			}
+		}
+
+		arrays[Mesh::ARRAY_VERTEX] = vertices;
+		arrays[Mesh::ARRAY_INDEX] = indices;
+
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays);
+	}
+
+	String save_path = p_params.get("save_path", "");
+	if (!save_path.is_empty()) {
+		Error err = ResourceSaver::save(mesh, save_path);
+		if (err != OK) {
+			_push_error(vformat("Failed to save mesh to %s", save_path));
+		}
+	}
+
+	_push_log(vformat("resource/create_mesh: %s", name));
+	Dictionary result;
+	result["name"] = name;
+	result["surface_count"] = mesh->get_surface_count();
+	result["path"] = save_path;
+	return result;
+}
+
+HANDLER(resource_create_animation) {
+	String name = p_params.get("name", "new_animation");
+	Dictionary props = p_params.get("properties", Dictionary());
+
+	Ref<Animation> anim;
+	anim.instantiate();
+	anim->set_name(name);
+
+	if (props.has("length")) {
+		anim->set_length(float(props["length"]));
+	} else {
+		anim->set_length(1.0);
+	}
+
+	if (props.has("loop_mode")) {
+		String loop = props["loop_mode"];
+		if (loop == "linear") anim->set_loop_mode(Animation::LOOP_LINEAR);
+		else if (loop == "pingpong") anim->set_loop_mode(Animation::LOOP_PINGPONG);
+		else anim->set_loop_mode(Animation::LOOP_NONE);
+	}
+
+	String save_path = p_params.get("save_path", "");
+	if (!save_path.is_empty()) {
+		Error err = ResourceSaver::save(anim, save_path);
+		if (err != OK) {
+			_push_error(vformat("Failed to save animation to %s", save_path));
+		}
+	}
+
+	_push_log(vformat("resource/create_animation: %s", name));
+	Dictionary result;
+	result["name"] = name;
+	result["length"] = anim->get_length();
+	result["path"] = save_path;
 	return result;
 }
 
