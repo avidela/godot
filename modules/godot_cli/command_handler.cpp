@@ -53,8 +53,10 @@
 #include "scene/resources/packed_scene.h"
 
 #include "core/input/input_event.h"
-#include "core/input/input_event_key.h"
 
+#include "main/performance.h"
+#include "core/os/os.h"
+#include "core/version.h"
 #include "servers/audio/audio_server.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
@@ -62,7 +64,6 @@
 #include "modules/gdscript/gdscript.h"
 
 #include "core/input/input.h"
-#include "core/input/input_event.h"
 #include "scene/resources/texture.h"
 
 GodotCLICommandHandler *GodotCLICommandHandler::singleton = nullptr;
@@ -647,9 +648,9 @@ HANDLER(input_mouse_button) {
 	Input *input = Input::get_singleton();
 	ERR_FAIL_COND_V(!input, godot_cli::make_error(0, "No Input singleton available"));
 
-	MouseButton button = MouseButton::MOUSE_BUTTON_LEFT;
-	if (button_str == "right") button = MouseButton::MOUSE_BUTTON_RIGHT;
-	else if (button_str == "middle") button = MouseButton::MOUSE_BUTTON_MIDDLE;
+	MouseButton button = MouseButton::LEFT;
+	if (button_str == "right") button = MouseButton::RIGHT;
+	else if (button_str == "middle") button = MouseButton::MIDDLE;
 
 	Ref<InputEventMouseButton> btn_event;
 	btn_event.instantiate();
@@ -835,9 +836,6 @@ HANDLER(script_write) {
 	file->store_string(source);
 	file->close();
 
-	// Notify the system that the file changed.
-	ResourceLoader::reload_project_file(full_path);
-
 	Dictionary result;
 	result["path"] = full_path;
 	result["bytes"] = source.utf8().length();
@@ -908,7 +906,7 @@ HANDLER(render_screenshot) {
 	ERR_FAIL_COND_V(!scene_tree, godot_cli::make_error(0, "No scene tree available"));
 
 	Window *root_win = scene_tree->get_root();
-	Viewport *viewport = root_win.ptr();
+	Viewport *viewport = root_win;
 	ERR_FAIL_COND_V(!viewport, godot_cli::make_error(0, "No root viewport available"));
 
 	// Get viewport texture and convert to image.
