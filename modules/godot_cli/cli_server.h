@@ -32,7 +32,7 @@
 #include "core/io/json.h"
 #include "core/io/stream_peer_tcp.h"
 #include "core/io/tcp_server.h"
-#include "core/object/ref_counted.h"
+#include "core/object/object.h"
 #include "modules/godot_cli/cli_types.h"
 
 class GodotCLICommandHandler;
@@ -43,12 +43,12 @@ class GodotCLICommandHandler;
  *
  * Singleton pattern (like GDScriptLanguageProtocol).
  */
-class GodotCLIServer : public RefCounted {
-	GDCLASS(GodotCLIServer, RefCounted);
+class GodotCLIServer : public Object {
+	GDCLASS(GodotCLIServer, Object);
 
 	static GodotCLIServer *singleton;
 
-	struct CLIRequest : public RefCounted {
+	struct CLIRequest {
 		GodotCLIServer *server = nullptr;
 		Ref<StreamPeerTCP> connection;
 		uint8_t buffer[godot_cli::MAX_MESSAGE_SIZE];
@@ -70,10 +70,10 @@ class GodotCLIServer : public RefCounted {
 	bool running = false;
 
 	// For simplicity, we handle one client at a time.
-	Ref<CLIRequest> current_client;
+	CLIRequest *current_client = nullptr;
 
 	// Command dispatcher.
-	Ref<GodotCLICommandHandler> handler;
+	GodotCLICommandHandler *handler = nullptr;
 
 	Error _on_client_connected();
 	void _on_client_disconnected();

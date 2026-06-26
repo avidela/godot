@@ -40,7 +40,7 @@ GodotCLIServer *GodotCLIServer::singleton = nullptr;
 GodotCLIServer::GodotCLIServer() {
 	ERR_FAIL_COND(singleton != nullptr);
 	singleton = this;
-	handler.instantiate();
+	handler = GodotCLICommandHandler::get_singleton();
 }
 
 GodotCLIServer::~GodotCLIServer() {
@@ -73,9 +73,12 @@ void GodotCLIServer::stop() {
 
 	running = false;
 
-	if (current_client.is_valid() && current_client->connection.is_valid()) {
-		current_client->connection->disconnect_from_host();
-		current_client.unref();
+	if (current_client) {
+		if (current_client->connection.is_valid()) {
+			current_client->connection->disconnect_from_host();
+		}
+		memdelete(current_client);
+		current_client = nullptr;
 	}
 
 	if (server.is_valid()) {
@@ -92,12 +95,12 @@ void GodotCLIServer::poll() {
 	}
 
 	// Accept new connections (we only handle one at a time for simplicity).
-	if (current_client.is_null() && server->is_connection_available()) {
+	if (!current_client && server->is_connection_available()) {
 		_on_client_connected();
 	}
 
 	// Handle data from the current client.
-	if (current_client.is_valid()) {
+	if (current_client) {
 		Error err = current_client->handle_data();
 		if (err != OK && err != ERR_BUSY) {
 			_on_client_disconnected();
@@ -118,7 +121,7 @@ Error GodotCLIServer::_on_client_connected() {
 	Ref<StreamPeerTCP> connection = server->take_connection();
 	ERR_FAIL_COND_V(connection.is_null(), ERR_BUG);
 
-	current_client = Ref<CLIRequest>(memnew(CLIRequest));
+	current_client = memnew(CLIRequest);
 	current_client->server = this;
 	current_client->connection = connection;
 	print_line("GodotCLIServer: Client connected.");
@@ -126,11 +129,12 @@ Error GodotCLIServer::_on_client_connected() {
 }
 
 void GodotCLIServer::_on_client_disconnected() {
-	if (current_client.is_valid()) {
+	if (current_client) {
 		if (current_client->connection.is_valid()) {
 			current_client->connection->disconnect_from_host();
 		}
-		current_client.unref();
+		memdelete(current_client);
+		current_client = nullptr;
 		print_line("GodotCLIServer: Client disconnected.");
 	}
 }

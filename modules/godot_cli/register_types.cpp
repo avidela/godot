@@ -35,16 +35,18 @@
 #include "core/object/class_db.h"
 
 void initialize_godot_cli_module(ModuleInitializationLevel p_level) {
-	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
-		return;
+	if (p_level == MODULE_INITIALIZATION_LEVEL_SERVERS) {
+		print_line("GodotCLI: init at SERVERS level");
 	}
+	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		print_line("GodotCLI: init at SCENE level");
+		GDREGISTER_CLASS(GodotCLIServer);
+		GDREGISTER_CLASS(GodotCLICommandHandler);
 
-	GDREGISTER_CLASS(GodotCLIServer);
-	GDREGISTER_CLASS(GodotCLICommandHandler);
-
-	// Create the singleton (not started until --daemon flag).
-	memnew(GodotCLIServer);
-	memnew(GodotCLICommandHandler);
+		// Create the singleton (not started until --daemon flag).
+		memnew(GodotCLIServer);
+		memnew(GodotCLICommandHandler);
+	}
 }
 
 void uninitialize_godot_cli_module(ModuleInitializationLevel p_level) {

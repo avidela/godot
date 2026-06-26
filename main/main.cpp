@@ -4515,6 +4515,29 @@ int Main::start() {
 		ResourceLoader::add_custom_loaders();
 		ResourceSaver::add_custom_savers();
 
+#ifdef MODULE_GODOT_CLI_ENABLED
+		// In daemon mode, start the CLI server before the game scene loads
+		// so that commands arrive before the engine tries to run a scene.
+		if (cli_daemon_enabled) {
+			print_line(vformat("GodotCLI: Starting daemon on port %d", cli_daemon_port));
+			GodotCLIServer *cli_server = GodotCLIServer::get_singleton();
+			if (cli_server) {
+				Error err = cli_server->start(cli_daemon_port);
+				if (err != OK) {
+					print_line(vformat("GodotCLI: Failed to start daemon: %d", err));
+				} else {
+					print_line("GodotCLI: Daemon started successfully");
+				}
+			} else {
+				print_line("GodotCLI: Server singleton is null!");
+			}
+			// In daemon mode, don't auto-run the game scene.
+			// The agent will send game/run when ready.
+			game_path = String();
+			script = String();
+		}
+#endif
+
 		if (!project_manager && !editor) { // game
 			if (!game_path.is_empty() || !script.is_empty()) {
 				//autoload
@@ -4906,18 +4929,6 @@ int Main::start() {
 
 	OS::get_singleton()->benchmark_end_measure("Startup", "Main::Start");
 	OS::get_singleton()->benchmark_dump();
-
-#ifdef MODULE_GODOT_CLI_ENABLED
-	if (cli_daemon_enabled) {
-		GodotCLIServer *cli_server = GodotCLIServer::get_singleton();
-		if (cli_server) {
-			Error err = cli_server->start(cli_daemon_port);
-			if (err != OK) {
-				OS::get_singleton()->print("Failed to start Godot CLI daemon on port %d.\n", cli_daemon_port);
-			}
-		}
-	}
-#endif
 
 	return EXIT_SUCCESS;
 }

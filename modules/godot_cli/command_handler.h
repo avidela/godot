@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "core/object/ref_counted.h"
+#include "core/object/object.h"
 #include "core/variant/dictionary.h"
 
 typedef Dictionary (*CLICommandFunc)(const Dictionary &p_params);
@@ -45,8 +45,8 @@ typedef Dictionary (*CLICommandFunc)(const Dictionary &p_params);
  *   input/key        -> _handle_input_key
  *   ...etc
  */
-class GodotCLICommandHandler : public RefCounted {
-	GDCLASS(GodotCLICommandHandler, RefCounted);
+class GodotCLICommandHandler : public Object {
+	GDCLASS(GodotCLICommandHandler, Object);
 
 	static GodotCLICommandHandler *singleton;
 
