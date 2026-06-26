@@ -4516,8 +4516,7 @@ int Main::start() {
 		ResourceSaver::add_custom_savers();
 
 #ifdef MODULE_GODOT_CLI_ENABLED
-		// In daemon mode, start the CLI server before the game scene loads
-		// so that commands arrive before the engine tries to run a scene.
+		// In daemon mode, start the CLI server before the game scene loads.
 		if (cli_daemon_enabled) {
 			print_line(vformat("GodotCLI: Starting daemon on port %d", cli_daemon_port));
 			GodotCLIServer *cli_server = GodotCLIServer::get_singleton();
@@ -4531,10 +4530,6 @@ int Main::start() {
 			} else {
 				print_line("GodotCLI: Server singleton is null!");
 			}
-			// In daemon mode, don't auto-run the game scene.
-			// The agent will send game/run when ready.
-			game_path = String();
-			script = String();
 		}
 #endif
 
