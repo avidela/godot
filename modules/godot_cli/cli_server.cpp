@@ -118,7 +118,7 @@ Error GodotCLIServer::_on_client_connected() {
 	Ref<StreamPeerTCP> connection = server->take_connection();
 	ERR_FAIL_COND_V(connection.is_null(), ERR_BUG);
 
-	current_client.instantiate();
+	current_client = Ref<CLIRequest>(memnew(CLIRequest));
 	current_client->server = this;
 	current_client->connection = connection;
 	print_line("GodotCLIServer: Client connected.");

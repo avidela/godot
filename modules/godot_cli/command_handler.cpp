@@ -51,6 +51,10 @@
 #include "scene/main/window.h"
 #include "scene/main/viewport.h"
 #include "scene/resources/packed_scene.h"
+
+#include "core/input/input_event.h"
+#include "core/input/input_event_key.h"
+
 #include "servers/audio/audio_server.h"
 #include "servers/display/display_server.h"
 #include "servers/rendering/rendering_server.h"
@@ -183,16 +187,16 @@ void GodotCLICommandHandler::_register_commands() {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_scene_commands() {
-	REGISTER("scene/tree", _handle_scene_tree);
-	REGISTER("scene/add_node", _handle_scene_add_node);
-	REGISTER("scene/remove_node", _handle_scene_remove_node);
-	REGISTER("scene/get", _handle_scene_get);
-	REGISTER("scene/set", _handle_scene_set);
-	REGISTER("scene/save", _handle_scene_save);
-	REGISTER("scene/open", _handle_scene_open);
-	REGISTER("scene/new", _handle_scene_new);
-	REGISTER("scene/attach_script", _handle_scene_attach_script);
-	REGISTER("scene/connect", _handle_scene_connect);
+	REGISTER("scene/tree", _handler_scene_tree);
+	REGISTER("scene/add_node", _handler_scene_add_node);
+	REGISTER("scene/remove_node", _handler_scene_remove_node);
+	REGISTER("scene/get", _handler_scene_get);
+	REGISTER("scene/set", _handler_scene_set);
+	REGISTER("scene/save", _handler_scene_save);
+	REGISTER("scene/open", _handler_scene_open);
+	REGISTER("scene/new", _handler_scene_new);
+	REGISTER("scene/attach_script", _handler_scene_attach_script);
+	REGISTER("scene/connect", _handler_scene_connect);
 }
 
 HANDLER(scene_tree) {
@@ -289,7 +293,7 @@ HANDLER(scene_add_node) {
 	node->set_owner(scene_tree->get_edited_scene_root() ? scene_tree->get_edited_scene_root() : static_cast<Node*>(scene_tree->get_root().ptr()));
 
 	Dictionary result;
-	result["path"] = node->get_path();
+	result["path"] = String(node->get_path());
 	result["name"] = node->get_name();
 	result["type"] = node->get_class();
 	return result;
@@ -305,7 +309,7 @@ HANDLER(scene_remove_node) {
 	Node *node = static_cast<Node*>(scene_tree->get_root().ptr())->get_node(NodePath(node_path));
 	ERR_FAIL_COND_V_MSG(!node, godot_cli::make_error(0, vformat("Node not found: %s", node_path)), "");
 
-	String parent_path = node->get_parent()->get_path();
+	String parent_path = node->get_parent() ? String(node->get_parent()->get_path()) : "";
 	node->queue_free();
 
 	Dictionary result;
@@ -347,10 +351,10 @@ HANDLER(scene_get) {
 	Dictionary result;
 	result["class"] = node->get_class();
 	result["name"] = node->get_name();
-	result["path"] = node->get_path();
+	result["path"] = String(node->get_path());
 	result["properties"] = prop_dict;
 	result["child_count"] = node->get_child_count();
-	result["script"] = node->get_script().is_valid() ? node->get_script()->get_path() : Variant();
+	result["script"] = node->get_script();
 
 	return result;
 }
@@ -511,11 +515,11 @@ HANDLER(scene_connect) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_game_commands() {
-	REGISTER("game/run", _handle_game_run);
-	REGISTER("game/stop", _handle_game_stop);
-	REGISTER("game/pause", _handle_game_pause);
-	REGISTER("game/resume", _handle_game_resume);
-	REGISTER("game/step", _handle_game_step);
+	REGISTER("game/run", _handler_game_run);
+	REGISTER("game/stop", _handler_game_stop);
+	REGISTER("game/pause", _handler_game_pause);
+	REGISTER("game/resume", _handler_game_resume);
+	REGISTER("game/step", _handler_game_step);
 }
 
 HANDLER(game_run) {
@@ -555,7 +559,7 @@ HANDLER(game_stop) {
 HANDLER(game_pause) {
 	SceneTree *scene_tree = SceneTree::get_singleton();
 	if (scene_tree) {
-		scene_tree->set_paused(true);
+		scene_tree->set_pause(true);
 	}
 	Dictionary result;
 	result["paused"] = true;
@@ -565,7 +569,7 @@ HANDLER(game_pause) {
 HANDLER(game_resume) {
 	SceneTree *scene_tree = SceneTree::get_singleton();
 	if (scene_tree) {
-		scene_tree->set_paused(false);
+		scene_tree->set_pause(false);
 	}
 	Dictionary result;
 	result["paused"] = false;
@@ -586,10 +590,10 @@ HANDLER(game_step) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_input_commands() {
-	REGISTER("input/key", _handle_input_key);
-	REGISTER("input/mouse_move", _handle_input_mouse_move);
-	REGISTER("input/mouse_button", _handle_input_mouse_button);
-	REGISTER("input/action", _handle_input_action);
+	REGISTER("input/key", _handler_input_key);
+	REGISTER("input/mouse_move", _handler_input_mouse_move);
+	REGISTER("input/mouse_button", _handler_input_mouse_button);
+	REGISTER("input/action", _handler_input_action);
 }
 
 HANDLER(input_key) {
@@ -603,7 +607,7 @@ HANDLER(input_key) {
 
 	Ref<InputEventKey> key_event;
 	key_event.instantiate();
-	key_event->set_keycode(Key(key_str.utf8().get_data()));
+	key_event->set_keycode(find_keycode(key_str));
 	key_event->set_pressed(pressed);
 	key_event->set_echo(p_params.get("echo", false));
 
@@ -643,9 +647,9 @@ HANDLER(input_mouse_button) {
 	Input *input = Input::get_singleton();
 	ERR_FAIL_COND_V(!input, godot_cli::make_error(0, "No Input singleton available"));
 
-	MouseButton button = MOUSE_BUTTON_LEFT;
-	if (button_str == "right") button = MOUSE_BUTTON_RIGHT;
-	else if (button_str == "middle") button = MOUSE_BUTTON_MIDDLE;
+	MouseButton button = MouseButton::MOUSE_BUTTON_LEFT;
+	if (button_str == "right") button = MouseButton::MOUSE_BUTTON_RIGHT;
+	else if (button_str == "middle") button = MouseButton::MOUSE_BUTTON_MIDDLE;
 
 	Ref<InputEventMouseButton> btn_event;
 	btn_event.instantiate();
@@ -690,10 +694,10 @@ HANDLER(input_action) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_debug_commands() {
-	REGISTER("debug/logs", _handle_debug_logs);
-	REGISTER("debug/errors", _handle_debug_errors);
-	REGISTER("debug/inspect", _handle_debug_inspect);
-	REGISTER("debug/monitor", _handle_debug_monitor);
+	REGISTER("debug/logs", _handler_debug_logs);
+	REGISTER("debug/errors", _handler_debug_errors);
+	REGISTER("debug/inspect", _handler_debug_inspect);
+	REGISTER("debug/monitor", _handler_debug_monitor);
 }
 
 HANDLER(debug_logs) {
@@ -764,7 +768,7 @@ HANDLER(debug_inspect) {
 			Dictionary child_info;
 			child_info["name"] = child->get_name();
 			child_info["class"] = child->get_class();
-			child_info["path"] = child->get_path();
+			child_info["path"] = String(child->get_path());
 			children.push_back(child_info);
 		}
 		result["children"] = children;
@@ -807,9 +811,9 @@ HANDLER(debug_monitor) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_script_commands() {
-	REGISTER("script/write", _handle_script_write);
-	REGISTER("script/read", _handle_script_read);
-	REGISTER("script/validate", _handle_script_validate);
+	REGISTER("script/write", _handler_script_write);
+	REGISTER("script/read", _handler_script_read);
+	REGISTER("script/validate", _handler_script_validate);
 }
 
 HANDLER(script_write) {
@@ -896,7 +900,7 @@ HANDLER(script_validate) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_render_commands() {
-	REGISTER("render/screenshot", _handle_render_screenshot);
+	REGISTER("render/screenshot", _handler_render_screenshot);
 }
 
 HANDLER(render_screenshot) {
@@ -947,7 +951,7 @@ HANDLER(render_screenshot) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_project_commands() {
-	REGISTER("project/settings", _handle_project_settings);
+	REGISTER("project/settings", _handler_project_settings);
 }
 
 HANDLER(project_settings) {
@@ -993,8 +997,8 @@ HANDLER(project_settings) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_resource_commands() {
-	REGISTER("resource/list", _handle_resource_list);
-	REGISTER("resource/import", _handle_resource_import);
+	REGISTER("resource/list", _handler_resource_list);
+	REGISTER("resource/import", _handler_resource_import);
 }
 
 HANDLER(resource_list) {
@@ -1077,9 +1081,9 @@ HANDLER(resource_import) {
 // ========================================================================
 
 void GodotCLICommandHandler::_register_daemon_commands() {
-	REGISTER("daemon/shutdown", _handle_daemon_shutdown);
-	REGISTER("daemon/ping", _handle_daemon_ping);
-	REGISTER("daemon/version", _handle_daemon_version);
+	REGISTER("daemon/shutdown", _handler_daemon_shutdown);
+	REGISTER("daemon/ping", _handler_daemon_ping);
+	REGISTER("daemon/version", _handler_daemon_version);
 }
 
 HANDLER(daemon_shutdown) {

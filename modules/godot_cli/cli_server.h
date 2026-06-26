@@ -48,7 +48,7 @@ class GodotCLIServer : public RefCounted {
 
 	static GodotCLIServer *singleton;
 
-	struct CLIRequest {
+	struct CLIRequest : public RefCounted {
 		GodotCLIServer *server = nullptr;
 		Ref<StreamPeerTCP> connection;
 		uint8_t buffer[godot_cli::MAX_MESSAGE_SIZE];
