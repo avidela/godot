@@ -793,13 +793,13 @@ HANDLER(debug_monitor) {
 	} else if (monitor == "frame_time" || monitor == "time/process") {
 		result["frame_time_ms"] = perf->get_monitor(Performance::TIME_PROCESS) * 1000.0;
 	} else if (monitor == "physics_time" || monitor == "time/physics") {
-		result["physics_time_ms"] = perf->get_monitor(Performance::TIME_PHYSICS) * 1000.0;
+		result["physics_time_ms"] = perf->get_monitor(Performance::TIME_PHYSICS_PROCESS) * 1000.0;
 	} else if (monitor == "memory/static") {
 		result["memory_kb"] = perf->get_monitor(Performance::MEMORY_STATIC) / 1024.0;
 	} else if (monitor == "objects" || monitor == "object/count") {
 		result["object_count"] = perf->get_monitor(Performance::OBJECT_COUNT);
 	} else if (monitor == "draw_calls" || monitor == "rendering/draw_calls") {
-		result["draw_calls"] = perf->get_monitor(Performance::RENDER_DRAWS_IN_FRAME);
+		result["draw_calls"] = perf->get_monitor(Performance::RENDER_TOTAL_DRAW_CALLS_IN_FRAME);
 	} else {
 		result["error"] = vformat("Unknown monitor: %s", monitor);
 	}
