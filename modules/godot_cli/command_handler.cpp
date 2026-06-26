@@ -44,6 +44,9 @@
 #include "core/object/script_language.h"
 #include "core/os/keyboard.h"
 #include "scene/2d/node_2d.h"
+#include "scene/2d/sprite_2d.h"
+#include "scene/2d/animated_sprite_2d.h"
+#include "scene/main/canvas_layer.h"
 #include "scene/3d/node_3d.h"
 #include "scene/animation/animation_player.h"
 #include "scene/gui/control.h"
@@ -254,6 +257,8 @@ HANDLER_DECL(debug_logs);
 HANDLER_DECL(debug_errors);
 HANDLER_DECL(debug_inspect);
 HANDLER_DECL(debug_monitor);
+HANDLER_DECL(debug_visual_overlaps);
+HANDLER_DECL(debug_render_layers);
 HANDLER_DECL(script_write);
 HANDLER_DECL(script_read);
 HANDLER_DECL(script_validate);
@@ -976,6 +981,8 @@ void GodotCLICommandHandler::_register_debug_commands() {
 	REGISTER("debug/errors", _handler_debug_errors);
 	REGISTER("debug/inspect", _handler_debug_inspect);
 	REGISTER("debug/monitor", _handler_debug_monitor);
+	REGISTER("debug/visual_overlaps", _handler_debug_visual_overlaps);
+	REGISTER("debug/render_layers", _handler_debug_render_layers);
 }
 
 HANDLER(debug_logs) {
@@ -1079,6 +1086,162 @@ HANDLER(debug_monitor) {
 		result["error"] = vformat("Unknown monitor: %s", monitor);
 	}
 
+	return result;
+}
+
+HANDLER(debug_visual_overlaps) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	Dictionary result;
+	Array overlaps;
+
+	Node *root = scene_tree ? scene_tree->get_root() : nullptr;
+	if (!root) {
+		result["overlaps"] = overlaps;
+		result["count"] = 0;
+		return result;
+	}
+
+	// Collect all nodes with visual bounds
+	struct VisualNode {
+		NodePath path;
+		String name;
+		Rect2 bounds;
+	};
+	Vector<VisualNode> visual_nodes;
+
+	// Recursively collect
+	List<Node *> stack;
+	for (int i = 0; i < root->get_child_count(); i++)
+		stack.push_back(root->get_child(i));
+
+	while (!stack.is_empty()) {
+		Node *node = stack.front()->get();
+		stack.pop_front();
+
+		for (int i = 0; i < node->get_child_count(); i++)
+			stack.push_back(node->get_child(i));
+
+		// Only check CanvasItem subclasses
+		if (!Object::cast_to<CanvasItem>(node))
+			continue;
+
+		Sprite2D *sprite = Object::cast_to<Sprite2D>(node);
+		AnimatedSprite2D *anim = Object::cast_to<AnimatedSprite2D>(node);
+		Control *ctrl = Object::cast_to<Control>(node);
+
+		if (sprite || anim || ctrl) {
+			Node2D *n2d = Object::cast_to<Node2D>(node);
+			Rect2 bounds;
+
+			if (sprite) {
+				Ref<Texture2D> tex = sprite->get_texture();
+				if (tex.is_valid()) {
+					Vector2 pos = n2d->get_global_position();
+					Vector2 scale = n2d->get_scale();
+					Size2 tex_size = tex->get_size() * scale;
+					if (sprite->is_centered())
+						bounds = Rect2(pos - tex_size * 0.5f, tex_size);
+					else
+						bounds = Rect2(pos, tex_size);
+				}
+			} else if (anim) {
+				Vector2 pos = n2d->get_global_position();
+				bounds = Rect2(pos - Vector2(16, 16), Vector2(32, 32));
+			} else if (ctrl) {
+				Vector2 pos = ctrl->get_global_position();
+				bounds = Rect2(pos, ctrl->get_size());
+			}
+
+			if (bounds.size.x > 0 && bounds.size.y > 0) {
+				visual_nodes.push_back({ node->get_path(), node->get_name(), bounds });
+			}
+		}
+	}
+
+	// Check for overlaps
+	for (int i = 0; i < visual_nodes.size(); i++) {
+		for (int j = i + 1; j < visual_nodes.size(); j++) {
+			if (visual_nodes[i].bounds.intersects(visual_nodes[j].bounds, true)) {
+				Dictionary overlap;
+				overlap["a"] = visual_nodes[i].path;
+				overlap["a_name"] = visual_nodes[i].name;
+				overlap["b"] = visual_nodes[j].path;
+				overlap["b_name"] = visual_nodes[j].name;
+				overlap["overlap_rect"] = VariantUtilityFunctions::var_to_str(
+					visual_nodes[i].bounds.intersection(visual_nodes[j].bounds));
+				overlaps.push_back(overlap);
+			}
+		}
+	}
+
+	result["overlaps"] = overlaps;
+	result["count"] = overlaps.size();
+	_push_log(vformat("debug/visual_overlaps: %d overlaps found", overlaps.size()));
+	return result;
+}
+
+HANDLER(debug_render_layers) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	Dictionary result;
+	Array layers_info;
+
+	if (!scene_tree) {
+		result["layers"] = layers_info;
+		return result;
+	}
+
+	Node *root = scene_tree->get_root();
+	if (!root) {
+		result["layers"] = layers_info;
+		return result;
+	}
+
+	Dictionary canvas_layers;
+
+	List<Node *> stack;
+	for (int i = 0; i < root->get_child_count(); i++)
+		stack.push_back(root->get_child(i));
+
+	while (!stack.is_empty()) {
+		Node *node = stack.front()->get();
+		stack.pop_front();
+
+		for (int i = 0; i < node->get_child_count(); i++)
+			stack.push_back(node->get_child(i));
+
+		CanvasLayer *cl = Object::cast_to<CanvasLayer>(node);
+		if (cl) {
+			Dictionary layer_info;
+			layer_info["name"] = node->get_name();
+			layer_info["layer"] = cl->get_layer();
+			layer_info["follow_viewport"] = cl->is_following_viewport();
+			layer_info["visible"] = cl->is_visible();
+
+			Array child_list;
+			for (int i = 0; i < node->get_child_count(); i++) {
+				Dictionary cd;
+				cd["name"] = node->get_child(i)->get_name();
+				cd["type"] = node->get_child(i)->get_class();
+				child_list.push_back(cd);
+			}
+			layer_info["children"] = child_list;
+			layers_info.push_back(layer_info);
+		}
+
+		CanvasItem *ci = Object::cast_to<CanvasItem>(node);
+		if (ci && !cl && node->get_parent() && !Object::cast_to<CanvasLayer>(node->get_parent())) {
+			if (ci->get_z_index() != 0) {
+				Dictionary zi;
+				zi["name"] = node->get_name();
+				zi["z_index"] = ci->get_z_index();
+				zi["show_behind_parent"] = ci->is_draw_behind_parent_enabled();
+				layers_info.push_back(zi);
+			}
+		}
+	}
+
+	result["layers"] = layers_info;
+	result["count"] = layers_info.size();
 	return result;
 }
 

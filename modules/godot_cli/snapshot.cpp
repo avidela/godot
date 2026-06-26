@@ -38,6 +38,7 @@
 #include "scene/resources/2d/shape_2d.h"
 #include "scene/gui/label.h"
 #include "scene/2d/sprite_2d.h"
+#include "scene/2d/animated_sprite_2d.h"
 #include "scene/2d/physics/character_body_2d.h"
 #include "scene/resources/2d/rectangle_shape_2d.h"
 #include "scene/resources/2d/circle_shape_2d.h"
@@ -99,6 +100,54 @@ static Array _get_node_signals(Node *p_node) {
 		sigs.push_back(cd);
 	}
 	return sigs;
+}
+
+// Helper: compute the screen-space visual bounds of a node.
+// For Sprite2D: bounds based on texture size * scale, in global coordinates.
+// For Control: bounds based on rect position + size.
+static Rect2 _compute_visual_bounds(Node *p_node) {
+	Node2D *node2d = Object::cast_to<Node2D>(p_node);
+	if (node2d) {
+		// Check for Sprite2D child or self
+		Sprite2D *sprite = Object::cast_to<Sprite2D>(p_node);
+		if (!sprite) {
+			// Maybe we have a Sprite2D child?
+			for (int i = 0; i < p_node->get_child_count(); i++) {
+				sprite = Object::cast_to<Sprite2D>(p_node->get_child(i));
+				if (sprite) break;
+			}
+		}
+		if (sprite && sprite->is_visible()) {
+			Ref<Texture2D> tex = sprite->get_texture();
+			if (tex.is_valid()) {
+				Vector2 pos = node2d->get_global_position();
+				Vector2 scale = node2d->get_global_scale();
+				Size2 tex_size = tex->get_size() * scale;
+				if (sprite->is_centered()) {
+					return Rect2(pos - tex_size * 0.5f, tex_size);
+				} else {
+					return Rect2(pos, tex_size);
+				}
+			}
+		}
+
+		// For nodes with just a scale and no sprite, use a small default
+		if (node2d->get_scale() != Vector2(1, 1)) {
+			// Might be a non-texture visual (like procedural drawing)
+			// Return a default 16x16 bounds centered at position
+			Vector2 pos = node2d->get_global_position();
+			return Rect2(pos - Vector2(8, 8), Vector2(16, 16));
+		}
+	}
+
+	Control *ctrl = Object::cast_to<Control>(p_node);
+	if (ctrl && ctrl->is_visible()) {
+		Vector2 pos = ctrl->get_global_position();
+		Size2 size = ctrl->get_size();
+		return Rect2(pos, size);
+	}
+
+	return Rect2();
 }
 
 // Recursively build a snapshot of a node and its children.
@@ -170,8 +219,39 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 		Ref<Texture2D> tex = sprite->get_texture();
 		if (tex.is_valid()) {
 			props["texture"] = tex->get_path();
+			props["texture_loaded"] = true;
+			props["texture_size"] = VariantUtilityFunctions::var_to_str(tex->get_size());
+		} else {
+			props["texture_loaded"] = false;
 		}
 		props["centered"] = sprite->is_centered();
+	}
+
+	// AnimatedSprite2D: check if frames loaded
+	AnimatedSprite2D *anim_sprite = Object::cast_to<AnimatedSprite2D>(p_node);
+	if (anim_sprite) {
+		Ref<SpriteFrames> frames = anim_sprite->get_sprite_frames();
+		if (frames.is_valid()) {
+			props["frames_loaded"] = true;
+			props["current_animation"] = anim_sprite->get_animation();
+		} else {
+			props["frames_loaded"] = false;
+		}
+	}
+
+	// Compute visual bounds for any visible node
+	if (node2d) {
+		Dictionary vis_bounds;
+		Rect2 bounds = _compute_visual_bounds(p_node);
+		if (bounds.size.x > 0 && bounds.size.y > 0) {
+			vis_bounds["x"] = bounds.position.x;
+			vis_bounds["y"] = bounds.position.y;
+			vis_bounds["width"] = bounds.size.x;
+			vis_bounds["height"] = bounds.size.y;
+			vis_bounds["right"] = bounds.position.x + bounds.size.x;
+			vis_bounds["bottom"] = bounds.position.y + bounds.size.y;
+			node_info["visual_bounds"] = vis_bounds;
+		}
 	}
 
 	// CollisionShape2D: shape details
