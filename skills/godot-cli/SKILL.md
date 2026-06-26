@@ -455,6 +455,58 @@ godot-cli -s=test debug/logs
 godot-cli -s=test close
 ```
 
+## Gotchas & Lessons Learned
+
+### Node groups don't work in .tscn files
+
+```ini
+# THIS DOES NOT WORK at runtime:
+groups = ["coins"]
+```
+
+Groups defined in `.tscn` files are ignored when the scene is instantiated. Always add groups in `_ready()`:
+
+```gdscript
+func _ready():
+    add_to_group("coins")
+```
+
+### Collision shapes must be created in code
+
+Setting shapes via `scene/set` with a `resource_type` dictionary doesn't work. Create shapes in `_ready()`:
+
+```gdscript
+func _ready():
+    var s := RectangleShape2D.new()
+    s.size = Vector2(18, 30)
+    $CollisionShape2D.shape = s
+```
+
+Or write a `.tres` file and load it as a resource.
+
+### Don't use `scene/save` from daemon mode
+
+`scene/save` saves the **entire** window tree including the root Window, corrupting your scene file. Always write `.tscn` files directly as text.
+
+### Jump physics formula
+
+Jump height = `velocity² / (2 * gravity)`. For a jump of ~170 pixels with gravity 980:
+```gdscript
+jump_velocity = -650  # max height ≈ 216 pixels
+gravity = 980
+```
+
+### GDScript gotchas
+
+- No inline ternary: use `if cond: a else: b` blocks, not `a if cond else b`
+- Use `fmod(x, y)` not `x % y` for floats
+- Enum values: `Control.MOUSE_FILTER_STOP` not `CONTROL_MOUSE_FILTER_STOP`
+- Procedural audio: use `AudioStreamWAV` with `PackedByteArray` for raw PCM data
+
+### Input bindings
+
+Use `project/input_bind` command to set up input actions. The `object(InputEventKey,...)` format in project.godot uses numeric keycodes (KEY_A=65, KEY_D=68, KEY_W=87, KEY_SPACE=32, KEY_LEFT=4194319, KEY_RIGHT=4194321).
+
 ## Specific tasks
 
 * **Creating scenes and nodes** [references/scene-creation.md](references/scene-creation.md)
