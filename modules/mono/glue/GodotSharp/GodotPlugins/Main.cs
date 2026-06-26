@@ -105,7 +105,10 @@ namespace GodotPlugins
 
                 if (_editorHint)
                 {
-                    _editorApiAssembly = Assembly.Load("GodotSharpEditor");
+                    string pluginsPath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                    string pluginsDir = System.IO.Path.GetDirectoryName(pluginsPath);
+                    string editorAsmPath = System.IO.Path.Combine(pluginsDir, "GodotSharpEditor.dll");
+                    _editorApiAssembly = System.Reflection.Assembly.LoadFrom(editorAsmPath);
                     SharedAssemblies.Add(_editorApiAssembly.GetName());
                     NativeLibrary.SetDllImportResolver(_editorApiAssembly, _dllImportResolver);
                 }
