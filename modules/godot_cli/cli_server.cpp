@@ -134,7 +134,7 @@ void GodotCLIServer::_on_client_disconnected() {
 	}
 }
 
-String GodotCLIServer::_process_message(const String &p_message) {
+String GodotCLIServer::process_message(const String &p_message) {
 	Dictionary cmd = _parse_command(p_message);
 	if (cmd.is_empty()) {
 		Dictionary err_resp = godot_cli::make_error(0, "Invalid JSON command", godot_cli::RESULT_INVALID_PARAMS);
@@ -229,7 +229,7 @@ Error GodotCLIServer::CLIRequest::handle_data() {
 
 		// Parse the message.
 		String msg = String::utf8((const char *)buffer, buffer_pos);
-		String output = _process_message(msg);
+		String output = process_message(msg);
 
 		// Format response with content-length header.
 		CharString c_res = output.utf8();

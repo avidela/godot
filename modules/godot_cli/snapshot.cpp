@@ -29,9 +29,15 @@
 
 #include "modules/godot_cli/cli_types.h"
 #include "core/config/engine.h"
+#include "core/object/script_language.h"
 #include "core/variant/variant_utility.h"
 #include "scene/2d/node_2d.h"
 #include "scene/gui/control.h"
+#include "scene/main/window.h"
+
+#ifndef _3D_DISABLED
+#include "scene/3d/node_3d.h"
+#endif
 #include "scene/main/node.h"
 #include "scene/main/scene_tree.h"
 
@@ -49,7 +55,9 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 
 	// Include key properties based on type.
 	Node2D *node2d = Object::cast_to<Node2D>(p_node);
+#ifndef _3D_DISABLED
 	Node3D *node3d = Object::cast_to<Node3D>(p_node);
+#endif
 	Control *ctrl = Object::cast_to<Control>(p_node);
 
 	if (node2d) {
@@ -59,6 +67,7 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 		props["scale"] = VariantUtilityFunctions::var_to_str(node2d->get_scale());
 		props["visible"] = node2d->is_visible();
 		node_info["properties"] = props;
+#ifndef _3D_DISABLED
 	} else if (node3d) {
 		Dictionary props;
 		props["position"] = VariantUtilityFunctions::var_to_str(node3d->get_position());
@@ -66,6 +75,7 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 		props["scale"] = VariantUtilityFunctions::var_to_str(node3d->get_scale());
 		props["visible"] = node3d->is_visible();
 		node_info["properties"] = props;
+#endif
 	} else if (ctrl) {
 		Dictionary props;
 		props["position"] = VariantUtilityFunctions::var_to_str(ctrl->get_position());
@@ -82,9 +92,12 @@ static Dictionary _node_snapshot(Node *p_node, int p_max_depth, int p_depth, int
 	}
 
 	// Attached script.
-	if (p_node->get_script().is_valid()) {
-		Ref<Script> script_ref = p_node->get_script();
-		node_info["script"] = script_ref->get_path();
+	{
+		Variant script_var = p_node->get_script();
+		Ref<Script> script_ref = script_var;
+		if (script_ref.is_valid()) {
+			node_info["script"] = script_ref->get_path();
+		}
 	}
 
 	// Child count.

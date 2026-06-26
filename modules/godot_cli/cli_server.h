@@ -76,8 +76,10 @@ class GodotCLIServer : public RefCounted {
 
 	Error _on_client_connected();
 	void _on_client_disconnected();
-	String _process_message(const String &p_message);
 	Dictionary _parse_command(const String &p_message);
+
+	// Called from CLIRequest::handle_data.
+	String process_message(const String &p_message);
 
 protected:
 	static void _bind_methods();
