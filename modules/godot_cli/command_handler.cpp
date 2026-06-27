@@ -46,6 +46,9 @@
 #include "scene/2d/node_2d.h"
 #include "scene/2d/sprite_2d.h"
 #include "scene/2d/animated_sprite_2d.h"
+#include "scene/2d/physics/static_body_2d.h"
+#include "scene/2d/physics/area_2d.h"
+#include "scene/2d/physics/character_body_2d.h"
 #include "scene/main/canvas_layer.h"
 #include "scene/3d/node_3d.h"
 #include "scene/animation/animation_player.h"
@@ -249,6 +252,7 @@ HANDLER_DECL(game_stop);
 HANDLER_DECL(game_pause);
 HANDLER_DECL(game_resume);
 HANDLER_DECL(game_step);
+HANDLER_DECL(game_check_level);
 HANDLER_DECL(input_key);
 HANDLER_DECL(input_mouse_move);
 HANDLER_DECL(input_mouse_button);
@@ -259,6 +263,7 @@ HANDLER_DECL(debug_inspect);
 HANDLER_DECL(debug_monitor);
 HANDLER_DECL(debug_visual_overlaps);
 HANDLER_DECL(debug_render_layers);
+HANDLER_DECL(debug_script_vars);
 HANDLER_DECL(script_write);
 HANDLER_DECL(script_read);
 HANDLER_DECL(script_validate);
@@ -316,8 +321,65 @@ void GodotCLICommandHandler::_register_scene_commands() {
 
 HANDLER(scene_tree) {
 	// Returns the current scene tree as a nested dictionary.
-	// This is handled by the snapshot function.
+	// If 'compact' param is true, returns only names, types, positions, and visual_bounds.
 	Dictionary snapshot = godot_cli::build_snapshot();
+	bool compact = p_params.get("compact", false);
+
+	if (compact) {
+		// Build a compact version
+		Dictionary compact_root;
+		compact_root["running"] = snapshot.get("running", false);
+		compact_root["fps"] = snapshot.get("fps", 0);
+		compact_root["node_count"] = snapshot.get("node_count", 0);
+
+		Array original_nodes = snapshot.get("nodes", Array());
+		Array compact_nodes;
+
+		// Recursive compact function
+		std::function<Array(const Array&)> compact_nodes_fn = [&](const Array &nodes) -> Array {
+			Array result;
+			for (int i = 0; i < nodes.size(); i++) {
+				Dictionary original = nodes[i];
+				Dictionary compact;
+				compact["name"] = original.get("name", "?");
+				compact["type"] = original.get("type", "?");
+				compact["path"] = original.get("path", "");
+
+				Dictionary props = original.get("properties", Dictionary());
+				if (props.has("global_position")) {
+					compact["pos"] = VariantUtilityFunctions::var_to_str(props["global_position"]);
+				}
+
+				Dictionary vb = original.get("visual_bounds", Dictionary());
+				if (vb.size() > 0) {
+					compact["bounds"] = VariantUtilityFunctions::var_to_str(
+						Rect2(vb["x"], vb["y"], vb["width"], vb["height"]));
+				}
+
+				if (props.has("z_index")) {
+					compact["z"] = props["z_index"];
+				}
+				if (props.has("texture_loaded")) {
+					compact["tex"] = props["texture_loaded"];
+				}
+
+				Array children = original.get("children", Array());
+				if (children.size() > 0) {
+					compact["children"] = compact_nodes_fn(children);
+				}
+
+				result.push_back(compact);
+			}
+			return result;
+		};
+
+		compact_root["nodes"] = compact_nodes_fn(original_nodes);
+		Dictionary result;
+		result["_no_snapshot"] = true;
+		result["root"] = compact_root;
+		return result;
+	}
+
 	Dictionary result;
 	result["_no_snapshot"] = true; // We're returning the snapshot directly.
 	result["root"] = snapshot;
@@ -778,6 +840,7 @@ void GodotCLICommandHandler::_register_game_commands() {
 	REGISTER("game/resume", _handler_game_resume);
 	REGISTER("game/step", _handler_game_step);
 	REGISTER("game/restart", _handler_game_restart);
+	REGISTER("game/check_level", _handler_game_check_level);
 }
 
 HANDLER(game_run) {
@@ -863,6 +926,178 @@ HANDLER(game_restart) {
 	_push_log("game/restart");
 	Dictionary result;
 	result["restarted"] = true;
+	return result;
+}
+
+HANDLER(game_check_level) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	Dictionary result;
+	Array warnings;
+	Array errors;
+
+	if (!scene_tree) {
+		errors.push_back("No scene tree available");
+		result["errors"] = errors;
+		result["valid"] = false;
+		return result;
+	}
+
+	Node *root = scene_tree->get_root();
+	if (!root) {
+		errors.push_back("No root node");
+		result["errors"] = errors;
+		result["valid"] = false;
+		return result;
+	}
+
+	// Check for bounds (walls and ceiling)
+	bool has_left_wall = false, has_right_wall = false, has_ceiling = false, has_killzone = false;
+	Vector<Node2D*> platforms;
+	Vector<Node2D*> coins;
+	Node2D *player = nullptr;
+
+	List<Node *> stack;
+	for (int i = 0; i < root->get_child_count(); i++) {
+		stack.push_back(root->get_child(i));
+	}
+
+	while (!stack.is_empty()) {
+		Node *node = stack.front()->get();
+		stack.pop_front();
+
+		for (int i = 0; i < node->get_child_count(); i++) {
+			stack.push_back(node->get_child(i));
+		}
+
+		String script_path = "";
+		{
+			Variant script_var = node->get_script();
+			Object *script_obj = script_var;
+			Script *script = Object::cast_to<Script>(script_obj);
+			if (script) {
+				script_path = script->get_path();
+			}
+		}
+
+		Node2D *n2d = Object::cast_to<Node2D>(node);
+
+		// Detect bounds (walls at x near -20 or x near 660, ceiling at y near -20)
+		if (Object::cast_to<StaticBody2D>(node)) {
+			if (n2d) {
+				float x = n2d->get_global_position().x;
+				float y = n2d->get_global_position().y;
+
+				if (x < 0 && x > -100) has_left_wall = true;
+				if (x > 600 && x < 700) has_right_wall = true;
+				if (y < 0 && y > -100) has_ceiling = true;
+			}
+		}
+
+		// Detect killzone (Area2D with large collision at bottom)
+		if (Object::cast_to<Area2D>(node)) {
+			if (n2d && n2d->get_global_position().y > 480) {
+				has_killzone = true;
+			}
+		}
+
+		// Track player
+		if (Object::cast_to<CharacterBody2D>(node)) {
+			player = n2d;
+		}
+
+		// Track platforms and coins by position
+		if (script_path.contains("Platform") && n2d) {
+			platforms.push_back(n2d);
+
+			// Check for very thin platforms (visual < 10px tall = invisible)
+			for (int j = 0; j < node->get_child_count(); j++) {
+				Sprite2D *s = Object::cast_to<Sprite2D>(node->get_child(j));
+				if (s) {
+					Ref<Texture2D> tex = s->get_texture();
+					if (tex.is_valid()) {
+						Vector2 scale = s->get_scale();
+						float visual_h = tex->get_size().y * scale.y;
+						if (visual_h < 10.0f) {
+							warnings.push_back(vformat("Platform '%s' visual height=%.0fpx — likely invisible", node->get_name(), visual_h));
+						}
+					}
+				}
+			}
+		}
+		if (script_path.contains("Coin") && n2d) {
+			coins.push_back(n2d);
+		}
+	}
+
+	// Check bounds
+	if (!has_left_wall) warnings.push_back("No left wall — player can fall out of bounds");
+	if (!has_right_wall) warnings.push_back("No right wall — player can fall out of bounds");
+	if (!has_ceiling) warnings.push_back("No ceiling — player can jump out of bounds");
+	if (!has_killzone) warnings.push_back("No killzone — player can fall forever");
+	if (!player) errors.push_back("No player (CharacterBody2D) found");
+
+	// Check platform reachability from player position
+	if (player && platforms.size() > 0) {
+		Vector2 player_pos = player->get_global_position();
+		const double MAX_H_JUMP = 200.0;  // max horizontal jump distance
+		const double MAX_V_JUMP = 150.0;  // max vertical jump (upward)
+		const double MAX_V_FALL = 250.0;  // max fall distance (downward)
+
+		int reachable = 0;
+		for (int i = 0; i < platforms.size(); i++) {
+			Vector2 plat_pos = platforms[i]->get_global_position();
+			double dx = Math::abs(plat_pos.x - player_pos.x);
+			double dy = player_pos.y - plat_pos.y; // positive means platform is above
+
+			// Can check reachability from other platforms too
+			// For now: check if reachable from any platform or ground
+			bool can_reach = false;
+			if (dy > 0) {
+				// Platform is above — need to jump up
+				can_reach = dx < MAX_H_JUMP && dy < MAX_V_JUMP;
+			} else {
+				// Platform is below — player can fall to it
+				can_reach = dx < MAX_H_JUMP && -dy < MAX_V_FALL;
+			}
+
+			if (can_reach) reachable++;
+		}
+
+		if (reachable < platforms.size()) {
+			warnings.push_back(vformat("Only %d/%d platforms reachable from player start", reachable, platforms.size()));
+		}
+	}
+
+	// Check coins near platforms
+	int coins_on_platforms = 0;
+	for (int i = 0; i < coins.size(); i++) {
+		Vector2 coin_pos = coins[i]->get_global_position();
+		for (int j = 0; j < platforms.size(); j++) {
+			Vector2 plat_pos = platforms[j]->get_global_position();
+			double dx = Math::abs(coin_pos.x - plat_pos.x);
+			double dy = coin_pos.y - plat_pos.y;
+			if (dx < 50 && dy > -50 && dy < 0) {
+				coins_on_platforms++;
+				break;
+			}
+		}
+	}
+	if (coins_on_platforms < coins.size()) {
+		warnings.push_back(vformat("Only %d/%d coins are near platforms", coins_on_platforms, coins.size()));
+	}
+
+	result["platforms"] = platforms.size();
+	result["coins"] = coins.size();
+	result["player"] = player != nullptr;
+	result["has_left_wall"] = has_left_wall;
+	result["has_right_wall"] = has_right_wall;
+	result["has_ceiling"] = has_ceiling;
+	result["has_killzone"] = has_killzone;
+	result["warnings"] = warnings;
+	result["errors"] = errors;
+	result["valid"] = errors.is_empty();
+
+	_push_log(vformat("game/check_level: %d warnings, %d errors", warnings.size(), errors.size()));
 	return result;
 }
 
@@ -983,6 +1218,7 @@ void GodotCLICommandHandler::_register_debug_commands() {
 	REGISTER("debug/monitor", _handler_debug_monitor);
 	REGISTER("debug/visual_overlaps", _handler_debug_visual_overlaps);
 	REGISTER("debug/render_layers", _handler_debug_render_layers);
+	REGISTER("debug/script_vars", _handler_debug_script_vars);
 }
 
 HANDLER(debug_logs) {
@@ -1242,6 +1478,59 @@ HANDLER(debug_render_layers) {
 
 	result["layers"] = layers_info;
 	result["count"] = layers_info.size();
+	return result;
+}
+
+HANDLER(debug_script_vars) {
+	SceneTree *scene_tree = SceneTree::get_singleton();
+	Dictionary result;
+
+	if (!scene_tree) {
+		result["error"] = "No scene tree";
+		return result;
+	}
+
+	String node_path = p_params.get("path", "");
+	if (node_path.is_empty()) {
+		result["error"] = "Missing 'path' parameter";
+		return result;
+	}
+
+	Node *node = scene_tree->get_root()->get_node(NodePath(node_path));
+	if (!node) {
+		result["error"] = vformat("Node not found: %s", node_path);
+		return result;
+	}
+
+	// Get script
+	Variant script_var = node->get_script();
+	Object *script_obj = script_var;
+	Script *script = Object::cast_to<Script>(script_obj);
+	if (!script) {
+		result["error"] = "No script attached to node";
+		result["script_path"] = "";
+		return result;
+	}
+
+	result["script_path"] = script->get_path();
+
+	// Get all script properties (exported and public)
+	List<PropertyInfo> pinfo;
+	script->get_script_property_list(&pinfo);
+	Array props;
+	for (const PropertyInfo &E : pinfo) {
+		Dictionary pd;
+		pd["name"] = E.name;
+		pd["type"] = Variant::get_type_name(E.type);
+		// Try to get value
+		Variant val = node->get(E.name);
+		pd["value"] = VariantUtilityFunctions::var_to_str(val);
+		props.push_back(pd);
+	}
+
+	result["properties"] = props;
+	result["count"] = props.size();
+	_push_log(vformat("debug/script_vars: %s - %d properties", node_path, props.size()));
 	return result;
 }
 
