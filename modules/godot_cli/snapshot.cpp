@@ -111,7 +111,6 @@ static Rect2 _compute_visual_bounds(Node *p_node) {
 		// Check for Sprite2D child or self
 		Sprite2D *sprite = Object::cast_to<Sprite2D>(p_node);
 		if (!sprite) {
-			// Maybe we have a Sprite2D child?
 			for (int i = 0; i < p_node->get_child_count(); i++) {
 				sprite = Object::cast_to<Sprite2D>(p_node->get_child(i));
 				if (sprite) break;
@@ -120,8 +119,8 @@ static Rect2 _compute_visual_bounds(Node *p_node) {
 		if (sprite && sprite->is_visible()) {
 			Ref<Texture2D> tex = sprite->get_texture();
 			if (tex.is_valid()) {
-				Vector2 pos = node2d->get_global_position();
-				Vector2 scale = node2d->get_global_scale();
+				Vector2 pos = sprite->get_global_position();
+				Vector2 scale = sprite->get_global_scale();
 				Size2 tex_size = tex->get_size() * scale;
 				if (sprite->is_centered()) {
 					return Rect2(pos - tex_size * 0.5f, tex_size);
@@ -131,10 +130,32 @@ static Rect2 _compute_visual_bounds(Node *p_node) {
 			}
 		}
 
+		// Check for AnimatedSprite2D child or self (common for animated characters)
+		AnimatedSprite2D *anim_sprite = Object::cast_to<AnimatedSprite2D>(p_node);
+		if (!anim_sprite) {
+			for (int i = 0; i < p_node->get_child_count(); i++) {
+				anim_sprite = Object::cast_to<AnimatedSprite2D>(p_node->get_child(i));
+				if (anim_sprite) break;
+			}
+		}
+		if (anim_sprite && anim_sprite->is_visible()) {
+			Ref<SpriteFrames> frames = anim_sprite->get_sprite_frames();
+			if (frames.is_valid()) {
+				StringName current = anim_sprite->get_animation();
+				if (frames->has_animation(current) && frames->get_frame_count(current) > 0) {
+					Ref<Texture2D> tex = frames->get_frame_texture(current, 0);
+					if (tex.is_valid()) {
+						Vector2 pos = anim_sprite->get_global_position();
+						Vector2 scale = anim_sprite->get_global_scale();
+						Size2 tex_size = tex->get_size() * scale;
+						return Rect2(pos - tex_size * 0.5f, tex_size);
+					}
+				}
+			}
+		}
+
 		// For nodes with just a scale and no sprite, use a small default
 		if (node2d->get_scale() != Vector2(1, 1)) {
-			// Might be a non-texture visual (like procedural drawing)
-			// Return a default 16x16 bounds centered at position
 			Vector2 pos = node2d->get_global_position();
 			return Rect2(pos - Vector2(8, 8), Vector2(16, 16));
 		}
