@@ -776,6 +776,18 @@ void ScriptEditorDebugger::_msg_error(uint64_t p_thread_id, const Array &p_data)
 	} else {
 		error_count++;
 	}
+
+	// CLI: forward game errors to the debug/errors buffer.
+	if (Engine::get_singleton()->is_editor_hint()) {
+		String cli_msg = vformat("[GAME %s] %s (%s:%d)",
+				oe.warning ? "WARNING" : "ERROR",
+				oe.error_descr.is_empty() ? oe.error : oe.error_descr,
+				oe.source_file, oe.source_line);
+		// Import the function from the CLI module.
+		// Defined in modules/godot_cli/command_handler.cpp
+		extern void godot_cli_push_error(const String &p_msg);
+		godot_cli_push_error(cli_msg);
+	}
 }
 
 void ScriptEditorDebugger::_msg_servers_function_signature(uint64_t p_thread_id, const Array &p_data) {

@@ -46,7 +46,10 @@
 #include "scene/2d/node_2d.h"
 #include "scene/2d/sprite_2d.h"
 #include "scene/2d/animated_sprite_2d.h"
+#include "scene/resources/sprite_frames.h"
 #include "scene/2d/physics/static_body_2d.h"
+#include "scene/2d/physics/collision_shape_2d.h"
+#include "scene/resources/2d/rectangle_shape_2d.h"
 #include "scene/2d/physics/area_2d.h"
 #include "scene/2d/physics/character_body_2d.h"
 #include "scene/main/canvas_layer.h"
@@ -75,9 +78,15 @@
 
 #include "modules/gdscript/gdscript.h"
 
+#ifdef TOOLS_ENABLED
+#include "editor/editor_node.h"
+#include "editor/run/editor_run_bar.h"
+#endif
+
 #include "core/input/input.h"
 #include "core/input/input_map.h"
 #include "scene/resources/texture.h"
+#include "scene/resources/image_texture.h"
 
 // ── Log ring buffer ───────────────────────────────────────────────────
 // Simple in-memory log ring buffer for debug/logs and debug/errors.
@@ -110,6 +119,39 @@ static void _push_error(const String &p_msg) {
 	if (_error_buffer.size() > MAX_ERROR_ENTRIES) {
 		_error_buffer.remove_at(0);
 	}
+}
+
+// Engine-wide error handler hook — captures all ERR_PRINT / ERR_FAIL calls.
+static ErrorHandlerList _cli_error_handler;
+
+static void _cli_error_handler_cb(void *p_userdata, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_explain, bool p_editor_notify, ErrorHandlerType p_type) {
+	// Pick the non-empty string; p_explain is often a zero-length C string.
+	String err_msg;
+	if (p_explain && p_explain[0] != '\0') {
+		err_msg = String(p_explain);
+	} else if (p_error && p_error[0] != '\0') {
+		err_msg = String(p_error);
+	} else {
+		err_msg = "(no message)";
+	}
+	String msg = vformat("[%s] %s  (%s:%d)",
+			_error_handler_type_string(p_type),
+			err_msg, p_file, p_line);
+	_push_error(msg);
+}
+
+void godot_cli_register_error_handler() {
+	_cli_error_handler.errfunc = _cli_error_handler_cb;
+	_cli_error_handler.userdata = nullptr;
+	add_error_handler(&_cli_error_handler);
+}
+
+void godot_cli_unregister_error_handler() {
+	remove_error_handler(&_cli_error_handler);
+}
+
+void godot_cli_push_error(const String &p_msg) {
+	_push_error(p_msg);
 }
 
 // ── Helper to build an Array of log entries ───────────────────────────
@@ -216,8 +258,8 @@ Dictionary GodotCLICommandHandler::handle(const Dictionary &p_command) {
 		resp["result"] = clean;
 	}
 
-	// Include snapshot unless suppressed.
-	if (!result.get("_no_snapshot", false)) {
+	// Include snapshot unless suppressed or in editor mode (editor tree is too large).
+	if (!result.get("_no_snapshot", false) && !Engine::get_singleton()->is_editor_hint()) {
 		resp["snapshot"] = godot_cli::build_snapshot();
 	}
 
@@ -247,6 +289,7 @@ HANDLER_DECL(scene_groups_list);
 HANDLER_DECL(game_restart);
 HANDLER_DECL(project_input_bind);
 HANDLER_DECL(project_validate);
+HANDLER_DECL(project_create_cs_solution);
 HANDLER_DECL(game_run);
 HANDLER_DECL(game_stop);
 HANDLER_DECL(game_pause);
@@ -271,6 +314,8 @@ HANDLER_DECL(render_screenshot);
 HANDLER_DECL(project_settings);
 HANDLER_DECL(resource_list);
 HANDLER_DECL(resource_import);
+HANDLER_DECL(resource_import_status);
+HANDLER_DECL(resource_copy);
 HANDLER_DECL(resource_create_material);
 HANDLER_DECL(resource_create_mesh);
 HANDLER_DECL(resource_create_animation);
@@ -844,6 +889,34 @@ void GodotCLICommandHandler::_register_game_commands() {
 }
 
 HANDLER(game_run) {
+#ifdef TOOLS_ENABLED
+	// Editor mode: trigger the editor's Play button (same as F5).
+	if (Engine::get_singleton()->is_editor_hint()) {
+		EditorNode *editor = EditorNode::get_singleton();
+		if (!editor) {
+			return godot_cli::make_error(0, "Editor node not available");
+		}
+		EditorRunBar *run_bar = editor->get_project_run_bar();
+		if (!run_bar) {
+			return godot_cli::make_error(0, "Editor run bar not available");
+		}
+
+		String scene = p_params.get("scene", "");
+		if (!scene.is_empty()) {
+			run_bar->play_custom_scene(scene);
+		} else {
+			run_bar->play_main_scene(false);
+		}
+
+		_push_log(vformat("game/run: editor play requested (scene=%s)", scene.is_empty() ? "main" : scene));
+		Dictionary result;
+		result["running"] = true;
+		result["mode"] = "editor";
+		return result;
+	}
+#endif
+
+	// Daemon mode: load scene into the running game tree (existing behaviour).
 	String scene_path = p_params.get("scene", "");
 
 	SceneTree *scene_tree = SceneTree::get_singleton();
@@ -865,7 +938,6 @@ HANDLER(game_run) {
 		root->add_child(instance);
 	}
 
-	// Mark as running (if there's no editor, the game loop is already running).
 	Dictionary result;
 	result["running"] = true;
 	return result;
@@ -1382,7 +1454,22 @@ HANDLER(debug_visual_overlaps) {
 				}
 			} else if (anim) {
 				Vector2 pos = n2d->get_global_position();
-				bounds = Rect2(pos - Vector2(16, 16), Vector2(32, 32));
+				// Get actual frame size from SpriteFrames
+				Ref<SpriteFrames> sf = anim->get_sprite_frames();
+				if (sf.is_valid()) {
+					String anim_name = anim->get_animation();
+					int frame_idx = anim->get_frame();
+					Ref<Texture2D> frame_tex = sf->get_frame_texture(anim_name, frame_idx);
+					if (frame_tex.is_valid()) {
+						Size2 frame_size = frame_tex->get_size();
+						bounds = Rect2(pos - frame_size * 0.5f, frame_size);
+					} else {
+						// Fallback to default size
+						bounds = Rect2(pos - Vector2(16, 16), Vector2(32, 32));
+					}
+				} else {
+					bounds = Rect2(pos - Vector2(16, 16), Vector2(32, 32));
+				}
 			} else if (ctrl) {
 				Vector2 pos = ctrl->get_global_position();
 				bounds = Rect2(pos, ctrl->get_size());
@@ -1392,6 +1479,99 @@ HANDLER(debug_visual_overlaps) {
 				visual_nodes.push_back({ node->get_path(), node->get_name(), bounds });
 			}
 		}
+	}
+
+	// Add visual nodes to result for debugging
+	Array visual_nodes_info;
+	for (int i = 0; i < visual_nodes.size(); i++) {
+		Dictionary node_info;
+		node_info["name"] = visual_nodes[i].name;
+		node_info["path"] = visual_nodes[i].path;
+		node_info["bounds"] = VariantUtilityFunctions::var_to_str(visual_nodes[i].bounds);
+		visual_nodes_info.push_back(node_info);
+	}
+	result["visual_nodes"] = visual_nodes_info;
+
+	// If tight mode, recompute bounds using visible content only
+	bool tight = p_params.get("tight", false);
+	if (tight) {
+		for (int i = 0; i < visual_nodes.size(); i++) {
+			Node *node = scene_tree->get_root()->get_node(visual_nodes[i].path);
+			if (!node) continue;
+
+			Sprite2D *sprite = Object::cast_to<Sprite2D>(node);
+			AnimatedSprite2D *anim = Object::cast_to<AnimatedSprite2D>(node);
+
+			Ref<Texture2D> tex;
+			if (sprite) {
+				tex = sprite->get_texture();
+			} else if (anim) {
+				Ref<SpriteFrames> sf = anim->get_sprite_frames();
+				if (sf.is_valid()) {
+					tex = sf->get_frame_texture(anim->get_animation(), anim->get_frame());
+				}
+			}
+
+			if (tex.is_valid()) {
+				Ref<Image> img = tex->get_image();
+				if (img.is_valid()) {
+					img = img->duplicate();
+					if (img->get_format() != Image::FORMAT_RGBA8) {
+						img->convert(Image::FORMAT_RGBA8);
+					}
+
+					int w = img->get_width();
+					int h = img->get_height();
+					int min_x = w, min_y = h, max_x = 0, max_y = 0;
+					bool found = false;
+
+					for (int y = 0; y < h; y++) {
+						for (int x = 0; x < w; x++) {
+							Color c = img->get_pixel(x, y);
+							if (c.a > 0.01f) {
+								min_x = MIN(min_x, x);
+								min_y = MIN(min_y, y);
+								max_x = MAX(max_x, x);
+								max_y = MAX(max_y, y);
+								found = true;
+							}
+						}
+					}
+
+					if (found) {
+						Node2D *n2d = Object::cast_to<Node2D>(node);
+						Vector2 pos = n2d ? n2d->get_global_position() : Vector2();
+						Vector2 scale = n2d ? n2d->get_scale() : Vector2(1, 1);
+
+						// Compute tight bounds in global coordinates
+						// The texture origin depends on centered flag
+						Vector2 tex_origin;
+						if (sprite && sprite->is_centered()) {
+							tex_origin = pos - Vector2(w, h) * 0.5f * scale;
+						} else {
+							tex_origin = pos;
+						}
+
+						Vector2 tight_min = tex_origin + Vector2(min_x, min_y) * scale;
+						Vector2 tight_max = tex_origin + Vector2(max_x + 1, max_y + 1) * scale;
+						VisualNode updated = visual_nodes[i];
+						updated.bounds = Rect2(tight_min, tight_max - tight_min);
+						visual_nodes.write[i] = updated;
+					}
+				}
+			}
+		}
+
+		// Update visual_nodes_info with tight bounds
+		visual_nodes_info.clear();
+		for (int i = 0; i < visual_nodes.size(); i++) {
+			Dictionary node_info;
+			node_info["name"] = visual_nodes[i].name;
+			node_info["path"] = visual_nodes[i].path;
+			node_info["bounds"] = VariantUtilityFunctions::var_to_str(visual_nodes[i].bounds);
+			visual_nodes_info.push_back(node_info);
+		}
+		result["visual_nodes"] = visual_nodes_info;
 	}
 
 	// Check for overlaps
@@ -1412,7 +1592,88 @@ HANDLER(debug_visual_overlaps) {
 
 	result["overlaps"] = overlaps;
 	result["count"] = overlaps.size();
-	_push_log(vformat("debug/visual_overlaps: %d overlaps found", overlaps.size()));
+
+	// Check for visual/collision misalignment
+	Array misalignments;
+	{
+		List<Node *> stack2;
+		for (int i = 0; i < root->get_child_count(); i++)
+			stack2.push_back(root->get_child(i));
+
+		while (!stack2.is_empty()) {
+			Node *node = stack2.front()->get();
+			stack2.pop_front();
+
+			for (int i = 0; i < node->get_child_count(); i++)
+				stack2.push_back(node->get_child(i));
+
+			// Only check nodes with both collision and visual
+			StaticBody2D *static_body = Object::cast_to<StaticBody2D>(node);
+			CharacterBody2D *char_body = Object::cast_to<CharacterBody2D>(node);
+			if (!static_body && !char_body) continue;
+
+			// Find collision shape
+			CollisionShape2D *col_shape = nullptr;
+			for (int i = 0; i < node->get_child_count(); i++) {
+				col_shape = Object::cast_to<CollisionShape2D>(node->get_child(i));
+				if (col_shape) break;
+			}
+			if (!col_shape || !col_shape->get_shape().is_valid()) continue;
+
+			// Find visual sprite
+			Sprite2D *sprite = nullptr;
+			for (int i = 0; i < node->get_child_count(); i++) {
+				sprite = Object::cast_to<Sprite2D>(node->get_child(i));
+				if (sprite) break;
+			}
+			if (!sprite || !sprite->get_texture().is_valid()) continue;
+
+			// Compare collision top vs visual top
+			Node2D *n2d = Object::cast_to<Node2D>(node);
+			if (!n2d) continue;
+
+			Vector2 node_pos = n2d->get_global_position();
+			Vector2 col_shape_pos = col_shape->get_global_position();
+			Vector2 sprite_pos = sprite->get_global_position();
+
+			// Get collision shape bounds
+			Ref<Shape2D> shape = col_shape->get_shape();
+			RectangleShape2D *rect_shape = Object::cast_to<RectangleShape2D>(shape.ptr());
+			if (!rect_shape) continue;
+
+			Vector2 col_size = rect_shape->get_size();
+			float col_top = col_shape_pos.y - col_size.y * 0.5f;
+
+			// Get visual bounds
+			Ref<Texture2D> tex = sprite->get_texture();
+			Vector2 tex_size = tex->get_size() * sprite->get_scale();
+			float visual_top;
+			if (sprite->is_centered()) {
+				visual_top = sprite_pos.y - tex_size.y * 0.5f;
+			} else {
+				visual_top = sprite_pos.y;
+			}
+
+			// Check misalignment: visual should be at or above collision top
+			float diff = visual_top - col_top;
+			if (Math::abs(diff) > 1.0f) {
+				Dictionary mis;
+				mis["node"] = node->get_path();
+				mis["node_name"] = node->get_name();
+				mis["collision_top"] = col_top;
+				mis["visual_top"] = visual_top;
+				mis["offset"] = diff;
+				mis["message"] = vformat("Visual is %.1fpx %s collision top",
+						Math::abs(diff), diff > 0 ? "below" : "above");
+				misalignments.push_back(mis);
+			}
+		}
+	}
+	result["misalignments"] = misalignments;
+	if (misalignments.size() > 0) {
+		_push_log(vformat("debug/visual_overlaps: %d visual/collision misalignments", misalignments.size()));
+	}
+
 	return result;
 }
 
@@ -1679,6 +1940,7 @@ HANDLER(render_screenshot) {
 	String base64 = CryptoCore::b64_encode_str(png_data.ptr(), png_data.size());
 
 	Dictionary result;
+	result["_no_snapshot"] = true;
 	result["width"] = img->get_width();
 	result["height"] = img->get_height();
 	result["format"] = Image::get_format_name(img->get_format());
@@ -1699,6 +1961,7 @@ void GodotCLICommandHandler::_register_project_commands() {
 	REGISTER("project/settings", _handler_project_settings);
 	REGISTER("project/input_bind", _handler_project_input_bind);
 	REGISTER("project/validate", _handler_project_validate);
+	REGISTER("project/create_cs_solution", _handler_project_create_cs_solution);
 }
 
 HANDLER(project_settings) {
@@ -1755,10 +2018,27 @@ HANDLER(project_input_bind) {
 		ie.instantiate();
 		ie->set_keycode(keycode);
 		ie->set_physical_keycode(keycode);
+		ie->set_device(-1);
 		im->action_add_event(action_name, ie);
 	}
 	ProjectSettings *ps = ProjectSettings::get_singleton();
 	if (ps) {
+		// Persist to ProjectSettings so it saves to project.godot
+		Dictionary input_dict;
+		Array input_events;
+		for (int i = 0; i < keys.size(); i++) {
+			String key_str = keys[i];
+			Key keycode = find_keycode(key_str);
+			Ref<InputEventKey> ie;
+			ie.instantiate();
+			ie->set_keycode(keycode);
+			ie->set_physical_keycode(keycode);
+			ie->set_device(-1);
+			input_events.push_back(ie);
+		}
+		input_dict["deadzone"] = 0.5f;
+		input_dict["events"] = input_events;
+		ps->set_setting(vformat("input/%s", action_name), input_dict);
 		ps->save();
 	}
 	_push_log(vformat("project/input_bind: %s = %d keys", action_name, keys.size()));
@@ -1832,6 +2112,86 @@ HANDLER(project_validate) {
 	return result;
 }
 
+HANDLER(project_create_cs_solution) {
+	Dictionary result;
+
+	String project_path = ProjectSettings::get_singleton()->get_resource_path();
+	String project_name = ProjectSettings::get_singleton()->get("application/config/name");
+	if (project_name.is_empty()) {
+		project_name = project_path.get_file();
+	}
+	// Clean name - remove spaces and special chars
+	project_name = project_name.replace(" ", "_");
+
+	// Find existing .csproj
+	String csproj_path;
+	Ref<DirAccess> dir = DirAccess::open(project_path);
+	if (dir.is_valid()) {
+		dir->list_dir_begin();
+		for (String f = dir->get_next(); !f.is_empty(); f = dir->get_next()) {
+			if (f.ends_with(".csproj")) {
+				csproj_path = project_path.path_join(f);
+				break;
+			}
+		}
+		dir->list_dir_end();
+	}
+
+	if (csproj_path.is_empty()) {
+		return godot_cli::make_error(0, "No .csproj file found. Create a .csproj first.");
+	}
+
+	// Generate a deterministic GUID from the project name
+	String hash = project_name.md5_text();
+	String guid = vformat("%s-%s-%s-%s-%s",
+			hash.substr(0, 4) + hash.substr(4, 4),
+			hash.substr(8, 4),
+			hash.substr(12, 4),
+			hash.substr(16, 4),
+			hash.substr(20, 12)).to_upper();
+
+	// Build .sln content
+	String sln_path = project_path.path_join(project_name + ".sln");
+	String sln_content;
+	sln_content += "Microsoft Visual Studio Solution File, Format Version 12.00\n";
+	sln_content += "# Visual Studio Version 17\n";
+	sln_content += vformat("VisualStudioVersion = 17.0.31903.59\n");
+	sln_content += vformat("MinimumVisualStudioVersion = 10.0.40219.1\n");
+	sln_content += vformat("Project(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"%s\", \"%s\", \"{%s}\"\n", project_name, csproj_path.get_file(), guid);
+	sln_content += "EndProject\n";
+	sln_content += "Global\n";
+	sln_content += "\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n";
+	sln_content += "\t\tDebug|Any CPU = Debug|Any CPU\n";
+	sln_content += "\t\tExportDebug|Any CPU = ExportDebug|Any CPU\n";
+	sln_content += "\t\tExportRelease|Any CPU = ExportRelease|Any CPU\n";
+	sln_content += "\tEndGlobalSection\n";
+	sln_content += "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution\n";
+	sln_content += vformat("\t\t{%s}.Debug|Any CPU.ActiveCfg = Debug|Any CPU\n", guid);
+	sln_content += vformat("\t\t{%s}.Debug|Any CPU.Build.0 = Debug|Any CPU\n", guid);
+	sln_content += vformat("\t\t{%s}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU\n", guid);
+	sln_content += vformat("\t\t{%s}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU\n", guid);
+	sln_content += vformat("\t\t{%s}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU\n", guid);
+	sln_content += vformat("\t\t{%s}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU\n", guid);
+	sln_content += "\tEndGlobalSection\n";
+	sln_content += "EndGlobal\n";
+
+	// Write .sln file
+	Ref<FileAccess> file = FileAccess::open(sln_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return godot_cli::make_error(0, vformat("Failed to create solution: %s", sln_path));
+	}
+	file->store_string(sln_content);
+	file->close();
+
+	result["sln_path"] = sln_path;
+	result["csproj_path"] = csproj_path;
+	result["project_name"] = project_name;
+	result["message"] = "C# solution created. Restart the editor to detect it.";
+
+	_push_log(vformat("project/create_cs_solution: created %s", sln_path));
+	return result;
+}
+
 // ========================================================================
 // Resource commands
 // ========================================================================
@@ -1839,6 +2199,8 @@ HANDLER(project_validate) {
 void GodotCLICommandHandler::_register_resource_commands() {
 	REGISTER("resource/list", _handler_resource_list);
 	REGISTER("resource/import", _handler_resource_import);
+	REGISTER("resource/import_status", _handler_resource_import_status);
+	REGISTER("resource/copy", _handler_resource_copy);
 	REGISTER("resource/create_material", _handler_resource_create_material);
 	REGISTER("resource/create_mesh", _handler_resource_create_mesh);
 	REGISTER("resource/create_animation", _handler_resource_create_animation);
@@ -1901,7 +2263,154 @@ HANDLER(resource_list) {
 }
 
 HANDLER(resource_import) {
-	// Import a resource file (copy to project).
+	// Import a resource file by loading it directly and saving as .res.
+	// This bypasses Godot's editor-only import system.
+	// Usage: resource/import path=res://assets/sprite.png
+	//   Or:  resource/import source=/path/to/file.png dest=res://assets/sprite.res
+	String source = p_params.get("source", "");
+	String path = p_params.get("path", "");
+
+	if (path.is_empty() && source.is_empty()) {
+		return godot_cli::make_error(0, "Missing 'path' (project file) or 'source' (absolute path) parameter");
+	}
+
+	// If source is given, copy to project first
+	String res_path = path;
+	Dictionary result;
+	Error err;
+
+	if (!source.is_empty()) {
+		if (res_path.is_empty()) {
+			res_path = "res://" + source.get_file();
+			// Change extension to .res
+			res_path = res_path.get_basename() + ".res";
+		}
+		err = DirAccess::copy_absolute(source, res_path);
+		if (err != OK) {
+			return godot_cli::make_error(0, vformat("Failed to copy %s to %s", source, res_path));
+		}
+		_push_log(vformat("resource/import: copied %s -> %s", source, res_path));
+		result["copied"] = true;
+		result["dest"] = res_path;
+	}
+
+	// Determine what kind of resource to import from extension
+	String ext = res_path.get_extension().to_lower();
+
+	if (ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp") {
+		// Load as texture
+		Ref<Image> img;
+		img.instantiate();
+		if (source.is_empty()) {
+			err = img->load(res_path);
+		} else {
+			err = img->load(source);
+		}
+		if (err != OK) {
+			return godot_cli::make_error(0, vformat("Failed to load image: %s", res_path));
+		}
+
+		Ref<ImageTexture> tex = ImageTexture::create_from_image(img);
+		if (tex.is_null()) {
+			return godot_cli::make_error(0, "Failed to create texture from image");
+		}
+
+		// Save as .res
+		String save_path = res_path.get_basename() + ".res";
+		err = ResourceSaver::save(tex, save_path);
+		if (err != OK) {
+			return godot_cli::make_error(0, vformat("Failed to save texture to %s", save_path));
+		}
+
+		result["type"] = "Texture2D";
+		result["save_path"] = save_path;
+		result["size"] = vformat("%dx%d", img->get_width(), img->get_height());
+		_push_log(vformat("resource/import: imported texture %s -> %s", res_path, save_path));
+	} else if (ext == "wav" || ext == "ogg" || ext == "mp3") {
+		// Load as audio stream
+		Ref<AudioStream> audio = ResourceLoader::load(res_path, "AudioStream");
+		if (audio.is_null()) {
+			return godot_cli::make_error(0, vformat("Failed to load audio: %s", res_path));
+		}
+
+		String save_path = res_path.get_basename() + ".res";
+		err = ResourceSaver::save(audio, save_path);
+		if (err != OK) {
+			return godot_cli::make_error(0, vformat("Failed to save audio to %s", save_path));
+		}
+
+		result["type"] = "AudioStream";
+		result["save_path"] = save_path;
+		_push_log(vformat("resource/import: imported audio %s -> %s", res_path, save_path));
+	} else if (ext == "glb" || ext == "gltf") {
+		// Load as scene
+		Ref<PackedScene> scene = ResourceLoader::load(res_path, "PackedScene");
+		if (scene.is_null()) {
+			return godot_cli::make_error(0, vformat("Failed to load scene: %s", res_path));
+		}
+
+		String save_path = res_path.get_basename() + ".scn";
+		err = ResourceSaver::save(scene, save_path);
+		if (err != OK) {
+			return godot_cli::make_error(0, vformat("Failed to save scene to %s", save_path));
+		}
+
+		result["type"] = "PackedScene";
+		result["save_path"] = save_path;
+		_push_log(vformat("resource/import: imported scene %s -> %s", res_path, save_path));
+	} else {
+		// Just copy the file, mark as imported
+		result["type"] = "Raw";
+		result["message"] = vformat("Copied %s to project. Use resource/import if it's a known format.", res_path);
+	}
+
+	result["imported"] = true;
+	return result;
+}
+
+HANDLER(resource_import_status) {
+	// Check import status (scanning progress).
+	Dictionary result;
+
+	if (!ClassDB::class_exists("EditorFileSystem")) {
+		result["available"] = false;
+		result["scanning"] = false;
+		return result;
+	}
+
+	// Find EditorFileSystem in scene tree
+	SceneTree *st = SceneTree::get_singleton();
+	Object *efs = nullptr;
+	if (st && st->get_root()) {
+		for (int i = 0; i < st->get_root()->get_child_count(); i++) {
+			Node *child = st->get_root()->get_child(i);
+			if (child->get_class() == "EditorFileSystem") {
+				efs = child;
+				break;
+			}
+		}
+	}
+
+	result["available"] = efs != nullptr;
+	if (efs) {
+		bool scanning = efs->call("is_scanning");
+		bool importing = efs->call("is_importing");
+		result["scanning"] = scanning;
+		result["importing"] = importing;
+		if (scanning || importing) {
+			float progress = efs->call("get_scanning_progress");
+			result["progress"] = progress;
+		}
+	} else {
+		result["scanning"] = false;
+		result["importing"] = false;
+	}
+
+	return result;
+}
+
+HANDLER(resource_copy) {
+	// Copy a resource file into the project (simple file copy).
 	String source = p_params.get("source", "");
 	String dest = p_params.get("dest", "");
 
@@ -1913,7 +2422,7 @@ HANDLER(resource_import) {
 	Error err = DirAccess::copy_absolute(source, dest);
 	ERR_FAIL_COND_V_MSG(err != OK, godot_cli::make_error(0, vformat("Failed to copy from %s to %s", source, dest)), "");
 
-	_push_log(vformat("resource/import: %s -> %s", source, dest));
+	_push_log(vformat("resource/copy: %s -> %s", source, dest));
 	Dictionary result;
 	result["source"] = source;
 	result["dest"] = dest;
@@ -2091,12 +2600,14 @@ HANDLER(daemon_shutdown) {
 		OS::get_singleton()->set_exit_code(EXIT_SUCCESS);
 	}
 	Dictionary result;
+	result["_no_snapshot"] = true;
 	result["shutdown"] = true;
 	return result;
 }
 
 HANDLER(daemon_ping) {
 	Dictionary result;
+	result["_no_snapshot"] = true;
 	result["pong"] = true;
 	result["timestamp"] = OS::get_singleton()->get_unix_time();
 	return result;
@@ -2104,6 +2615,7 @@ HANDLER(daemon_ping) {
 
 HANDLER(daemon_version) {
 	Dictionary result;
+	result["_no_snapshot"] = true;
 	result["version"] = String(VERSION_FULL_NAME);
 	result["protocol"] = godot_cli::PROTOCOL_VERSION;
 	return result;

@@ -97,6 +97,7 @@ def _find_godot():
     # Check common paths.
     home = os.path.expanduser("~")
     for p in [
+        os.path.join(home, "src", "godot", "bin", "godot.linuxbsd.editor.x86_64.mono"),
         os.path.join(home, "src", "godot", "bin", "godot.linuxbsd.editor.x86_64"),
         os.path.join(home, "src", "godot", "bin", "godot.linuxbsd.editor.x86_64.san"),
         os.path.join(home, "src", "godot", "bin", "godot.linuxbsd.editor.x86_64.llvm"),
@@ -157,7 +158,7 @@ def _send_command(port, command, params=None, timeout=30):
         # Read response header.
         response = b""
         while True:
-            chunk = sock.recv(4096)
+            chunk = sock.recv(262144)  # 256KB chunks for large responses
             if not chunk:
                 break
             response += chunk
@@ -173,7 +174,7 @@ def _send_command(port, command, params=None, timeout=30):
                         break
                 if len(body) >= content_length:
                     return json.loads(body.decode())
-                # Need more data.
+                # Need more data — continue reading.
                 continue
     except socket.timeout:
         return {"ok": False, "error": "Timeout waiting for response"}
@@ -213,7 +214,30 @@ def _format_response(response, raw=False):
                 if k in ('_ok', '_error', '_code', '_no_snapshot', 'data'):
                     continue
                 if isinstance(v, list):
-                    lines.append(f"  {k}: [{len(v)} items]")
+                    if k == "overlaps" and v:
+                        lines.append(f"  {k}: [{len(v)} overlaps]")
+                        for idx, item in enumerate(v[:10]):
+                            if isinstance(item, dict):
+                                a = item.get("a_name", item.get("a", "?"))
+                                b = item.get("b_name", item.get("b", "?"))
+                                rect = item.get("overlap_rect", "")
+                                lines.append(f"    [{idx+1}] {a} ↔ {b}  {rect}")
+                    elif k == "visual_nodes" and v:
+                        lines.append(f"  {k}: [{len(v)} nodes]")
+                        for idx, item in enumerate(v[:20]):
+                            if isinstance(item, dict):
+                                name = item.get("name", "?")
+                                bounds = item.get("bounds", "")
+                                lines.append(f"    [{idx+1}] {name}  {bounds}")
+                    elif k == "misalignments" and v:
+                        lines.append(f"  {k}: [{len(v)} issues]")
+                        for idx, item in enumerate(v[:10]):
+                            if isinstance(item, dict):
+                                name = item.get("node_name", "?")
+                                msg = item.get("message", "")
+                                lines.append(f"    [{idx+1}] {name}  {msg}")
+                    else:
+                        lines.append(f"  {k}: [{len(v)} items]")
                 elif isinstance(v, dict):
                     lines.append(f"  {k}: {{{len(v)} keys}}")
                     for k2, v2 in list(v.items())[:5]:
@@ -230,6 +254,10 @@ def _format_response(response, raw=False):
 
     # Snapshot.
     snapshot = response.get("snapshot")
+    # Also check result.root for scene/tree command
+    if not snapshot:
+        result = response.get("result", {})
+        snapshot = result.get("root", {})
     if snapshot and not raw:
         nodes = snapshot.get("nodes", [])
         if nodes:
@@ -280,22 +308,83 @@ def _format_nodes(nodes, lines, indent=0, max_depth=5, depth=0):
 # ── Command Handlers ───────────────────────────────────────────────────
 
 def cmd_open(args):
-    """Open a Godot project as a daemon session."""
-    session = _read_session(args.session)
+    """Open a Godot project as a daemon session or connect to a running editor."""
 
-    # Check if already running.
-    if session.get("pid"):
+    # Editor mode: start or connect to a running editor.
+    if args.editor:
+        port = args.port or (DEFAULT_PORT + 1)
+
+        # Check if editor is already running on this port.
         try:
-            os.kill(session["pid"], 0)  # Check if process exists
-            port = session["port"]
-            resp = _send_command(port, "daemon/ping")
+            resp = _send_command(port, "daemon/ping", timeout=2)
             if resp.get("ok"):
-                print("Session already running.")
+                print(f"Editor already running on port {port}")
                 return port
-        except (OSError, ProcessLookupError):
-            pass  # Stale session, clean up.
+        except Exception:
+            pass
 
-    # Find Godot binary.
+        # Start the editor.
+        godot_bin = args.binary or _find_godot()
+        if not godot_bin:
+            print("Error: Could not find Godot binary.")
+            print("Set GODOT_CLI_BIN environment variable or pass --binary.")
+            sys.exit(1)
+
+        cmd = [
+            godot_bin,
+            "--editor",
+            "--path", args.project or os.getcwd(),
+            "--rendering-driver", "opengl3",
+        ]
+        if args.display_driver:
+            cmd.extend(["--rendering-driver", args.display_driver])
+        if args.verbose:
+            cmd.append("--verbose")
+
+        if args.verbose:
+            print(f"Starting editor: {' '.join(cmd)}", flush=True)
+        else:
+            print(f"Starting editor...", flush=True)
+        env = os.environ.copy()
+        if "DISPLAY" not in env:
+            env["DISPLAY"] = ":0"
+        logfile = os.path.join(SESSION_DIR, f"editor-{args.session}.log")
+        subprocess.Popen(
+            cmd,
+            stdout=open(logfile, "w"),
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+
+        # Wait for editor to start.
+        print(f"Connecting to editor on port {port}...", flush=True)
+        editor_running = False
+        for attempt in range(45):
+            time.sleep(0.3)
+            try:
+                resp = _send_command(port, "daemon/ping", timeout=15)
+                if resp.get("ok"):
+                    editor_running = True
+                    break
+            except Exception:
+                pass
+
+        if editor_running:
+            data = {
+                "port": port,
+                "pid": 0,
+                "project": args.project or os.getcwd(),
+                "mode": "editor",
+            }
+            _write_session(data, args.session)
+            print(f"Connected to editor on port {port}", flush=True)
+            return port
+        else:
+            print(f"Error: Editor did not respond on port {port}")
+            sys.exit(1)
+
+    # Daemon mode (original).
     godot_bin = args.binary or _find_godot()
     if not godot_bin:
         print("Error: Could not find Godot binary.")
@@ -443,8 +532,12 @@ def cmd_send(args):
     """Send a command to a running daemon."""
     session = _read_session(args.session)
     if not session:
-        print("No session found. Use 'godot-cli open' first.")
-        sys.exit(1)
+        port = DEFAULT_PORT + 1  # Check editor port first as fallback
+        ping = _send_command(port, "daemon/ping", timeout=2)
+        if not ping.get("ok"):
+            print("No session found. Use 'godot-cli open' first.")
+            sys.exit(1)
+        session = {"port": port, "mode": "editor"}
 
     port = session.get("port")
     if not port:
@@ -452,11 +545,24 @@ def cmd_send(args):
         sys.exit(1)
 
     # Ping to check liveliness.
-    ping = _send_command(port, "daemon/ping")
+    ping = _send_command(port, "daemon/ping", timeout=2)
     if not ping.get("ok"):
-        print("Daemon is not responding.")
-        print(f"  {ping.get('error', '')}")
-        sys.exit(1)
+        # Try editor port as fallback
+        fallback_port = DEFAULT_PORT + 1
+        if fallback_port != port:
+            ping = _send_command(fallback_port, "daemon/ping", timeout=2)
+            if ping.get("ok"):
+                port = fallback_port
+                session["port"] = port
+                _write_session(session, args.session)
+            else:
+                print("Daemon is not responding.")
+                print(f"  {ping.get('error', '')}")
+                sys.exit(1)
+        else:
+            print("Daemon is not responding.")
+            print(f"  {ping.get('error', '')}")
+            sys.exit(1)
 
     # Parse the command.
     cmd_parts = args.command_args
@@ -534,7 +640,17 @@ def cmd_send(args):
 
     elif command == "render/screenshot":
         if len(cmd_parts) >= 2:
-            params.setdefault("file", cmd_parts[1])
+            arg = cmd_parts[1]
+            # Support both plain path and JSON: {"file":"path"}
+            if arg.startswith("{"):
+                try:
+                    parsed = json.loads(arg)
+                    if "file" in parsed:
+                        params["file"] = parsed["file"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if "file" not in params:
+                params["file"] = arg
 
     resp = _send_command(port, command, params)
     output = _format_response(resp, raw=args.raw)
@@ -586,7 +702,9 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # open
-    p_open = subparsers.add_parser("open", help="Start a Godot CLI daemon session")
+    p_open = subparsers.add_parser("open", help="Start a Godot CLI daemon session or connect to running editor")
+    p_open.add_argument("--editor", action="store_true",
+                        help="Connect to a running editor (port 3101)")
     p_open.add_argument("--project", "-p", default=None,
                         help="Project directory (default: current directory)")
     p_open.add_argument("--binary", "-b", default=None,
@@ -626,6 +744,8 @@ Examples:
     elif args.command == "list":
         cmd_list(args)
     elif args.command == "send":
+        # Merge unknown args into command_args so flags like --tight pass through
+        args.command_args = args.command_args + unknown
         cmd_send(args)
     else:
         # Unknown command - try sending directly to daemon.

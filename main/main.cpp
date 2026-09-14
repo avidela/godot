@@ -847,10 +847,18 @@ Error Main::test_setup() {
 
 #ifdef TOOLS_ENABLED
 	ClassDB::set_current_api(ClassDB::API_EDITOR);
+	printf("DBG_BEFORE_REG_EDITOR_TYPES\n");
+	fflush(stdout);
 	register_editor_types();
+	printf("DBG_AFTER_REG_EDITOR_TYPES\n");
+	fflush(stdout);
 
 	initialize_modules(MODULE_INITIALIZATION_LEVEL_EDITOR);
+	printf("DBG_AFTER_EDITOR_INIT\n");
+	fflush(stdout);
 	GDExtensionManager::get_singleton()->initialize_extensions(GDExtension::INITIALIZATION_LEVEL_EDITOR);
+	printf("DBG_AFTER_GDEXT_EDITOR\n");
+	fflush(stdout);
 
 	ClassDB::set_current_api(ClassDB::API_CORE);
 #endif
@@ -4516,16 +4524,18 @@ int Main::start() {
 		ResourceSaver::add_custom_savers();
 
 #ifdef MODULE_GODOT_CLI_ENABLED
-		// In daemon mode, start the CLI server before the game scene loads.
-		if (cli_daemon_enabled) {
-			print_line(vformat("GodotCLI: Starting daemon on port %d", cli_daemon_port));
+		// Start the CLI server for daemon mode or editor mode.
+		if (cli_daemon_enabled || editor) {
+			int port = cli_daemon_enabled ? cli_daemon_port : (cli_daemon_port + 1);
+			String mode = cli_daemon_enabled ? "daemon" : "editor";
+			print_line(vformat("GodotCLI: Starting %s on port %d", mode, port));
 			GodotCLIServer *cli_server = GodotCLIServer::get_singleton();
 			if (cli_server) {
-				Error err = cli_server->start(cli_daemon_port);
+				Error err = cli_server->start(port);
 				if (err != OK) {
-					print_line(vformat("GodotCLI: Failed to start daemon: %d", err));
+					print_line(vformat("GodotCLI: Failed to start %s: %d", mode, err));
 				} else {
-					print_line("GodotCLI: Daemon started successfully");
+					print_line(vformat("GodotCLI: %s started successfully", mode));
 				}
 			} else {
 				print_line("GodotCLI: Server singleton is null!");

@@ -46,6 +46,9 @@ void initialize_godot_cli_module(ModuleInitializationLevel p_level) {
 		// Create the singleton (not started until --daemon flag).
 		memnew(GodotCLIServer);
 		memnew(GodotCLICommandHandler);
+
+		// Hook into engine-wide error reporting.
+		godot_cli_register_error_handler();
 	}
 }
 
@@ -53,6 +56,9 @@ void uninitialize_godot_cli_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
+
+	// Unhook error handler.
+	godot_cli_unregister_error_handler();
 
 	if (GodotCLIServer::get_singleton()) {
 		GodotCLIServer::get_singleton()->stop();

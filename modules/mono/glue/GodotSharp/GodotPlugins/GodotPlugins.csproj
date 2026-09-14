@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\GodotSharp\GodotSharp.csproj" />
+    <ProjectReference Include="..\GodotSharpEditor\GodotSharpEditor.csproj" />
   </ItemGroup>
 
 </Project>

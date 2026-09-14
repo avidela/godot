@@ -31,6 +31,15 @@
 
 #include "core/object/object.h"
 #include "core/variant/dictionary.h"
+#include "core/error/error_macros.h"
+
+// Call to register/unregister the engine-wide error handler hook.
+// Captures all ERR_PRINT / ERR_FAIL calls and feeds them to debug/errors.
+void godot_cli_register_error_handler();
+void godot_cli_unregister_error_handler();
+
+// Called from ScriptEditorDebugger to forward game errors to our buffer.
+void godot_cli_push_error(const String &p_msg);
 
 typedef Dictionary (*CLICommandFunc)(const Dictionary &p_params);
 

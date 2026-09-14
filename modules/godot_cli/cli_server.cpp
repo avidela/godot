@@ -249,9 +249,13 @@ Error GodotCLIServer::CLIRequest::handle_data() {
 
 		// Format response with content-length header.
 		CharString c_res = output.utf8();
-		CharString c_header = vformat("Content-Length: %d\r\n\r\n", c_res.length()).utf8();
+		int body_len = c_res.length();
+		if (body_len > 0 && c_res[body_len - 1] == '\0') {
+			body_len--; // exclude null terminator from content-length
+		}
+		CharString c_header = vformat("Content-Length: %d\r\n\r\n", body_len).utf8();
 
-		// Queue full response.
+		// Queue full response. Body includes null terminator (harmless).
 		response_queue.push_back(c_header);
 		response_queue.push_back(c_res);
 

@@ -422,6 +422,8 @@ namespace GodotTools
         [UsedImplicitly]
         public bool OverridesExternalEditor()
         {
+            if (_editorSettings == null)
+                return false;
             return _editorSettings.GetSetting(Settings.ExternalEditor).As<ExternalEditorId>() != ExternalEditorId.None;
         }
 
@@ -493,9 +495,17 @@ namespace GodotTools
                 }
             }
 
-            var editorBaseControl = EditorInterface.Singleton.GetBaseControl();
+            EditorInterface editorInterface = null;
+            try {
+                editorInterface = EditorInterface.Singleton;
+            } catch (Exception ex) {
+                GD.PrintErr($"GodotTools: Failed to get EditorInterface singleton (non-fatal): {ex.Message}");
+            }
 
-            _editorSettings = EditorInterface.Singleton.GetEditorSettings();
+            if (editorInterface != null) {
+                var editorBaseControl = editorInterface.GetBaseControl();
+                _editorSettings = editorInterface.GetEditorSettings();
+            }
 
             _errorDialog = new AcceptDialog();
             _errorDialog.SetUnparentWhenInvisible(true);
