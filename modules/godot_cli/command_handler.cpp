@@ -1556,9 +1556,16 @@ HANDLER(debug_script_vars) {
 		Dictionary pd;
 		pd["name"] = E.name;
 		pd["type"] = Variant::get_type_name(E.type);
-		// Try to get value
+		// Try to get value. var_to_str renders a String as its source form, quotes and all, so a
+		// caller reading a string property got "\"...\"" back and had to strip the quotes. Strings
+		// pass through as they are; every other type keeps var_to_str, which is what makes a Vector3
+		// or a Color readable, so no other type changes shape.
 		Variant val = node->get(E.name);
-		pd["value"] = VariantUtilityFunctions::var_to_str(val);
+		if (val.get_type() == Variant::STRING || val.get_type() == Variant::STRING_NAME) {
+			pd["value"] = val;
+		} else {
+			pd["value"] = VariantUtilityFunctions::var_to_str(val);
+		}
 		props.push_back(pd);
 	}
 
