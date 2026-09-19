@@ -216,8 +216,14 @@ Dictionary GodotCLICommandHandler::handle(const Dictionary &p_command) {
 		resp["result"] = clean;
 	}
 
-	// Include snapshot unless suppressed.
-	if (!result.get("_no_snapshot", false)) {
+	// Include the snapshot unless the handler suppressed it, or unless the caller asked for it to
+	// be left out. In the editor build_snapshot() skips the editor's own widget tree, so this is
+	// the edited scene and costs kilobytes rather than megabytes.
+	bool include_snapshot = !(bool)result.get("_no_snapshot", false);
+	if (params.has("snapshot")) {
+		include_snapshot = (bool)params.get("snapshot", true) && !result.has("_no_snapshot");
+	}
+	if (include_snapshot) {
 		resp["snapshot"] = godot_cli::build_snapshot();
 	}
 
@@ -1130,6 +1136,11 @@ HANDLER(input_key) {
 	key_event->set_echo(p_params.get("echo", false));
 
 	input->parse_input_event(key_event);
+	// Godot accumulates input events and flushes them from the OS event pump, which a window that
+	// never takes focus does not drive. Without this flush a synthetic key is buffered and never
+	// seen: the InputMap still looks untouched and every "press a key" command silently does
+	// nothing on Linux.
+	input->flush_buffered_events();
 
 	Dictionary result;
 	result["key"] = key_str;
@@ -1150,6 +1161,11 @@ HANDLER(input_mouse_move) {
 	motion->set_global_position(Vector2(x, y));
 
 	input->parse_input_event(motion);
+	// Godot accumulates input events and flushes them from the OS event pump, which a window that
+	// never takes focus does not drive. Without this flush a synthetic key is buffered and never
+	// seen: the InputMap still looks untouched and every "press a key" command silently does
+	// nothing on Linux.
+	input->flush_buffered_events();
 
 	Dictionary result;
 	result["position"] = vformat("(%f, %f)", x, y);
@@ -1165,9 +1181,22 @@ HANDLER(input_mouse_button) {
 	Input *input = Input::get_singleton();
 	ERR_FAIL_COND_V(!input, godot_cli::make_error(0, "No Input singleton available"));
 
+	// Every unknown name used to fall through to a left click, so "wheel_up" quietly pressed the
+	// left button at (0,0) and the caller had no way to tell. The wheels and the extra buttons are
+	// what a click-driven interface actually needs, and a wrong name is now an error.
 	MouseButton button = MouseButton::LEFT;
-	if (button_str == "right") button = MouseButton::RIGHT;
+	if (button_str == "left") button = MouseButton::LEFT;
+	else if (button_str == "right") button = MouseButton::RIGHT;
 	else if (button_str == "middle") button = MouseButton::MIDDLE;
+	else if (button_str == "wheel_up") button = MouseButton::WHEEL_UP;
+	else if (button_str == "wheel_down") button = MouseButton::WHEEL_DOWN;
+	else if (button_str == "wheel_left") button = MouseButton::WHEEL_LEFT;
+	else if (button_str == "wheel_right") button = MouseButton::WHEEL_RIGHT;
+	else if (button_str == "xbutton1") button = MouseButton::MB_XBUTTON1;
+	else if (button_str == "xbutton2") button = MouseButton::MB_XBUTTON2;
+	else {
+		ERR_FAIL_V_MSG(godot_cli::make_error(0, vformat("Unknown mouse button '%s' (left, middle, right, wheel_up, wheel_down, wheel_left, wheel_right, xbutton1, xbutton2)", button_str)), "");
+	}
 
 	Ref<InputEventMouseButton> btn_event;
 	btn_event.instantiate();
@@ -1177,6 +1206,11 @@ HANDLER(input_mouse_button) {
 	btn_event->set_global_position(Vector2(x, y));
 
 	input->parse_input_event(btn_event);
+	// Godot accumulates input events and flushes them from the OS event pump, which a window that
+	// never takes focus does not drive. Without this flush a synthetic key is buffered and never
+	// seen: the InputMap still looks untouched and every "press a key" command silently does
+	// nothing on Linux.
+	input->flush_buffered_events();
 
 	Dictionary result;
 	result["button"] = button_str;

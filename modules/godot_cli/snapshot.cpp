@@ -380,14 +380,30 @@ Dictionary build_snapshot() {
 	result["fps"] = Engine::get_singleton()->get_frames_per_second();
 	result["node_count"] = root->get_child_count();
 
+	// In the editor the root's children are the editor's own widget tree, named by the engine with
+	// a leading '@' (@EditorNode@..., @EditorPropertyNameProcessor@...). Walking those produced a
+	// snapshot of a few megabytes for every command, which no caller asked for and which a client
+	// could not even parse. The edited scene is the thing worth reporting, and it is the child that
+	// is not the editor itself.
+	bool editor = Engine::get_singleton()->is_editor_hint();
+
 	int ref_counter = 0;
 	Array root_nodes;
+	int counted = 0;
 	for (int i = 0; i < root->get_child_count(); i++) {
 		Node *child = root->get_child(i);
+		if (editor && String(child->get_name()).begins_with("@")) {
+			continue;
+		}
 		Dictionary child_info = _node_snapshot(child, 8, 0, ref_counter);
 		root_nodes.push_back(child_info);
+		counted++;
 	}
 	result["nodes"] = root_nodes;
+	result["node_count"] = counted;
+	if (editor) {
+		result["editor_nodes_skipped"] = root->get_child_count() - counted;
+	}
 
 	return result;
 }
